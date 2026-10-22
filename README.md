@@ -25,8 +25,10 @@ after the first visit.
   connection. Crop overlay photos with their own crop box and aspect presets.
 - Mask (on the background photo or any photo layer): brush to hide/reveal (size, hardness, flow), linear and radial
   gradients, colour select (magic wand), invert, show/hide all. A masked background exports as a transparent PNG.
-- Merge: bake overlays, text, masks, crop and adjustments into one photo, then keep editing it as a single image
-  (Undo splits it back into layers).
+- ✓ Apply / ✗ Discard (under the picture, every tool): ✓ bakes everything so far — adjustments, filters, crop,
+  overlays, text, masks — into one photo and resets the tools, so the next edit stacks on top (desaturate twice, crop
+  again, …). ✗ throws away edits since the last ✓. Undo still steps back across applies. Merge in the Overlay panel
+  is the same action.
 - Undo/redo for everything, including mask strokes.
 - Save: JPEG or PNG at full, 50% or 25% size, then **Save → Save Image** puts it in Photos.
 

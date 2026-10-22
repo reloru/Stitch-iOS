@@ -47,6 +47,8 @@ import {
   IcGradient,
   IcInvert,
   IcLayers,
+  IcCheck,
+  IcClose,
   IcMask,
   IcMerge,
   IcPhoto,
@@ -124,6 +126,8 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const ownedSources = useRef(new Set<SourceImage>([props.initial.base.src]));
+  /** documents produced by ✓ Apply (plus the photo as opened): ✗ Discard returns to the latest of these */
+  const checkpoints = useRef(new Set<Doc>([props.initial]));
 
   const sel = doc.layers.some((l) => l.id === selected) ? selected : 'base';
 
@@ -205,6 +209,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   })();
 
   const changed = hist.canUndo;
+  const dirty = !checkpoints.current.has(doc);
 
   const doRemoveBg = async (id: string) => {
     const d = docRef.current;
@@ -226,27 +231,40 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
       setBusy(null);
     }
   };
-  const merge = async () => {
-    if (!docRef.current.layers.length) return;
-    setBusy('Merging into one photo…');
+  /**
+   * ✓ Apply: bakes everything so far into a new single photo; tools reset and new edits stack on top.
+   * The previous state stays in history, so Undo still steps back through it.
+   */
+  const apply = async (opts: { toAdjust?: boolean } = {}) => {
+    if (!dirty) return;
+    setBusy(docRef.current.layers.length ? 'Merging into one photo…' : 'Applying…');
     try {
       const r = await flattenDoc(docRef.current);
       ownedSources.current.add(r.src);
+      checkpoints.current.add(r.doc);
       change(r.doc, true);
       setSelected('base');
       setAspectLock(null);
-      setTool('adjust');
+      if (opts.toAdjust) setTool('adjust');
       toast(
         r.limited
-          ? 'Merged into one photo (reduced to the largest size this phone can edit). Undo brings the layers back.'
-          : 'Merged into one photo. Undo brings the layers back.',
-        3500,
+          ? 'Applied (reduced to the largest size this phone can edit). New edits stack on top.'
+          : 'Applied. New edits stack on top; Undo steps back.',
+        3000,
       );
     } catch (e) {
-      toast(`Couldn't merge: ${(e as Error).message}`);
+      toast(`Couldn't apply: ${(e as Error).message}`);
     } finally {
       setBusy(null);
     }
+  };
+  const merge = () => apply({ toAdjust: true });
+
+  /** ✗ Discard: steps back through history to the last applied state (or the photo as opened). */
+  const discard = () => {
+    let d: Doc | null = hist.current;
+    while (!checkpoints.current.has(hist.current) && hist.canUndo) d = hist.undo();
+    restore(d ?? hist.current);
   };
 
   const requestRemoveBg = (id: string) => {
@@ -301,6 +319,12 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
             <IcEye />
           </button>
         )}
+        <button class="tb-btn" aria-label="Discard changes" disabled={!dirty} onClick={discard} data-testid="discard">
+          <IcClose />
+        </button>
+        <button class="tb-btn apply" aria-label="Apply changes" disabled={!dirty} onClick={() => void apply()} data-testid="apply">
+          <IcCheck />
+        </button>
       </div>
 
       <div class="dock">
@@ -435,7 +459,7 @@ function MergeHint(props: { merge: () => void }) {
   return (
     <div class="row">
       <span class="label" style={{ flex: 1 }}>
-        This edits one layer. Merge to edit the whole picture.
+        This edits one layer. Merge (or ✓) to edit the whole picture.
       </span>
       <button class="btn" onClick={props.merge} data-testid="merge-hint">
         <IcMerge /> Merge layers

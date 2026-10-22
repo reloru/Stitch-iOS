@@ -157,7 +157,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
         itemDims(st.items),
         st.settings,
       );
-      const src = await sourceFromCanvas(canvas, 'Stitched');
+      const src = await sourceFromCanvas(canvas, 'Stitched', false);
       releaseCanvas(canvas);
       if (limited) toast('The stitched image was reduced to fit the editor on this device. Save from here for full size.', 4500);
       props.onEdit(src);

@@ -44,7 +44,7 @@ test('merge layers into one photo, edit it as a whole, undo to get the layers ba
 
   await page.getByRole('tab', { name: 'Overlay' }).click();
   await page.getByTestId('merge-layers').click();
-  await expect(page.locator('.toast')).toContainText('Merged into one photo');
+  await expect(page.locator('.toast')).toContainText('Applied');
   await expect(page.getByRole('tab', { name: 'Adjust' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('.topbar .title')).toHaveText('1200 × 1200');
   await expect(page.getByTestId('merge-hint')).toHaveCount(0);

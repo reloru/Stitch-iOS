@@ -76,7 +76,8 @@ export async function exportDoc(doc: Doc, format: Format, quality: number, scale
 export async function flattenDoc(doc: Doc): Promise<{ doc: Doc; src: SourceImage; limited: boolean }> {
   const r = await renderDocFull(doc, 1);
   try {
-    const src = await sourceFromCanvas(r.canvas, 'Merged photo');
+    const alpha = doc.background === null && (doc.base.src.alpha || doc.base.mask !== null);
+    const src = await sourceFromCanvas(r.canvas, 'Photo', alpha);
     return { doc: { ...newDoc(src), background: doc.background }, src, limited: r.limited };
   } finally {
     releaseCanvas(r.canvas);

@@ -47,6 +47,9 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
 - `src/stitch/` — same split for the stitcher.
 - `worker/` — `handler.ts` is pure (bindings injected, unit-tested in Node); `index.ts` wires `env.IMAGES` and
   `env.REMOVE_BG_LIMIT`. E2E tests never call the real API: they intercept `/api/remove-bg` with `page.route`.
+- ✓ Apply = `flattenDoc` (full-res render → new single-photo doc); applied docs are recorded as checkpoints and
+  ✗ Discard undoes back to the latest one. Opaque applies are stored as JPEG 0.97 (`sourceFromCanvas(…, alpha)`)
+  to bound memory, since every applied photo stays referenced by undo history.
 - Overlay photos: `ImageLayer.crop` is in source px; always map layer pixels with `imageLayerMat(l)` (crop-aware),
   and change crops via `setLayerCrop` so the visible pixels stay put. Masks stay in full source px.
 

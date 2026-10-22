@@ -746,3 +746,13 @@ textarea {
   height: 100%;
   touch-action: none;
 }
+
+.tb-btn.apply {
+  color: var(--accent);
+}
+
+.tb-btn.apply svg {
+  width: 26px;
+  height: 26px;
+  stroke-width: 2.4;
+}
