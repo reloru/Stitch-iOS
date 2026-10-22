@@ -177,3 +177,20 @@ test('overlay layer with blend mode, text layer and mask', async ({ page }) => {
   });
   expect(corner[3]).toBe(0);
 });
+
+test('top bar is a fixed, opaque, full-width edge bar that does not cover the canvas', async ({ page }) => {
+  // iOS 26+ only skips its Liquid Glass top-edge blur when a fixed, opaque, full-width box covers the edge.
+  await openPhoto(page);
+  const bar = await page.locator('.topbar').evaluate((el) => {
+    const cs = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return { position: cs.position, bg: cs.backgroundColor, top: r.top, left: r.left, width: r.width, bottom: r.bottom };
+  });
+  expect(bar.position).toBe('fixed');
+  expect(bar.bg).toBe('rgb(11, 11, 15)');
+  expect(bar.top).toBe(0);
+  expect(bar.left).toBe(0);
+  expect(bar.width).toBe(430);
+  const canvasTop = (await page.getByTestId('editor-canvas').boundingBox())!.y;
+  expect(canvasTop).toBeGreaterThanOrEqual(bar.bottom - 1);
+});

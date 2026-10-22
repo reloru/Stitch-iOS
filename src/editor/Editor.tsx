@@ -233,6 +233,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
         </button>
       </div>
 
+      <div class="topbar-space" />
       <div class="stage" ref={hostRef}>
         {hint && <div class="hint">{hint}</div>}
       </div>
