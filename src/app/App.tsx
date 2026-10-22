@@ -45,6 +45,7 @@ export function App() {
     <>
       {screen.kind === 'home' && (
         <div class="home">
+          <div class="status-cap" />
           <h1>Stitch</h1>
           <p class="lead">Edit, overlay, mask and stitch photos. Everything stays on your phone.</p>
           <button class="home-card" onClick={pickOne.open} data-testid="home-edit">

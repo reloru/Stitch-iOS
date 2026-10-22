@@ -223,6 +223,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
         </button>
       </div>
 
+      <div class="topbar-space" />
       <div class="stage" ref={hostRef}>
         {st.items.length > 0 && sel < 0 && <div class="hint">Tap a photo to trim or reorder it</div>}
       </div>

@@ -30,6 +30,9 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
 - iOS Safari constraints drive the design: edit on downscaled proxies, decode full resolution only at export,
   probe the canvas size limit at runtime, release canvases (`width = height = 0`) after use, and call
   `navigator.share` only directly from a tap (render the file first, then show the Save button).
+- Top edge: iOS 26+ blurs the top of home-screen web apps (Liquid Glass scroll edge effect) unless a fixed, full-width,
+  opaque box covers it. Keep `.topbar` `position: fixed` + opaque (with `.topbar-space` in flow) and `.status-cap` on screens
+  without a top bar; an e2e test guards this.
 - Icons: edit `public/icons/icon.svg`, then `npm run icons` to regenerate the PNGs.
 
 ## Layout

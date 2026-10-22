@@ -69,15 +69,39 @@ textarea {
 }
 
 /* ---------- top bar ---------- */
+/*
+ * iOS 26+ draws a Liquid Glass blur over the top of home-screen web apps ("scroll edge effect"). No CSS or meta
+ * tag disables it; WebKit skips it when a fixed, full-width, opaque box covers the edge. So the bar is fixed
+ * (with an in-flow spacer of the same height) and fully opaque, and the home screen gets a solid status cap.
+ */
 .topbar {
-  flex: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 15;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: calc(var(--safe-top) + 6px) calc(var(--safe-right) + 12px) 6px calc(var(--safe-left) + 12px);
-  min-height: calc(var(--safe-top) + 50px);
+  height: calc(var(--safe-top) + 50px);
   background: var(--bg);
   border-bottom: 1px solid var(--line);
+}
+
+.topbar-space {
+  flex: none;
+  height: calc(var(--safe-top) + 50px);
+}
+
+.status-cap {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 15;
+  height: var(--safe-top);
+  background: var(--bg);
 }
 
 .topbar .title {
