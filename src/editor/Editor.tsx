@@ -31,6 +31,7 @@ import { disposeSource, loadSource, uid, type SourceImage } from '../core/source
 import { Busy, Sheet, Slider, toast, usePicker } from '../ui/common';
 import { ExportSheet } from '../ui/ExportSheet';
 import { removeBackground } from '../core/removebg';
+import { flattenDoc } from '../core/export';
 import { CropSheet } from './CropSheet';
 import {
   IcAdjust,
@@ -47,6 +48,7 @@ import {
   IcInvert,
   IcLayers,
   IcMask,
+  IcMerge,
   IcPhoto,
   IcRadial,
   IcRedo,
@@ -224,6 +226,29 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
       setBusy(null);
     }
   };
+  const merge = async () => {
+    if (!docRef.current.layers.length) return;
+    setBusy('Merging into one photo…');
+    try {
+      const r = await flattenDoc(docRef.current);
+      ownedSources.current.add(r.src);
+      change(r.doc, true);
+      setSelected('base');
+      setAspectLock(null);
+      setTool('adjust');
+      toast(
+        r.limited
+          ? 'Merged into one photo (reduced to the largest size this phone can edit). Undo brings the layers back.'
+          : 'Merged into one photo. Undo brings the layers back.',
+        3500,
+      );
+    } catch (e) {
+      toast(`Couldn't merge: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const requestRemoveBg = (id: string) => {
     let ok = false;
     try {
@@ -280,6 +305,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
 
       <div class="dock">
         <div class="panel">
+          {(tool === 'adjust' || tool === 'filters') && doc.layers.length > 0 && <MergeHint merge={merge} />}
           {tool === 'adjust' && <AdjustPanel doc={doc} target={target} change={change} />}
           {tool === 'filters' && <FiltersPanel doc={doc} target={target} change={change} />}
           {tool === 'crop' && <CropPanel doc={doc} aspect={aspect} setAspect={setAspectLock} change={change} />}
@@ -299,6 +325,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
               editText={setEditingText}
               removeBg={requestRemoveBg}
               crop={setCropping}
+              merge={merge}
             />
           )}
           {tool === 'mask' && (
@@ -403,6 +430,19 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
+
+function MergeHint(props: { merge: () => void }) {
+  return (
+    <div class="row">
+      <span class="label" style={{ flex: 1 }}>
+        This edits one layer. Merge to edit the whole picture.
+      </span>
+      <button class="btn" onClick={props.merge} data-testid="merge-hint">
+        <IcMerge /> Merge layers
+      </button>
+    </div>
+  );
+}
 
 function TargetLabel(props: { target: Target | null }) {
   return (
@@ -603,6 +643,7 @@ function LayersPanel(props: {
   editText: (id: string) => void;
   removeBg: (id: string) => void;
   crop: (id: string) => void;
+  merge: () => void;
 }) {
   const { doc, selected, change } = props;
   const l = doc.layers.find((x) => x.id === selected) ?? null;
@@ -616,6 +657,11 @@ function LayersPanel(props: {
         <button class="btn" onClick={props.addText} data-testid="add-text-layer">
           <IcText /> Text
         </button>
+        {doc.layers.length > 0 && (
+          <button class="btn" onClick={props.merge} data-testid="merge-layers">
+            <IcMerge /> Merge
+          </button>
+        )}
         {[...doc.layers].reverse().map((x) => (
           <button key={x.id} class={'layer-chip' + (x.id === selected ? ' on' : '')} onClick={() => props.select(x.id)}>
             <LayerThumb layer={x} doc={doc} />

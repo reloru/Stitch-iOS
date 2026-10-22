@@ -25,6 +25,8 @@ after the first visit.
   connection. Crop overlay photos with their own crop box and aspect presets.
 - Mask (on the background photo or any photo layer): brush to hide/reveal (size, hardness, flow), linear and radial
   gradients, colour select (magic wand), invert, show/hide all. A masked background exports as a transparent PNG.
+- Merge: bake overlays, text, masks, crop and adjustments into one photo, then keep editing it as a single image
+  (Undo splits it back into layers).
 - Undo/redo for everything, including mask strokes.
 - Save: JPEG or PNG at full, 50% or 25% size, then **Save → Save Image** puts it in Photos.
 
