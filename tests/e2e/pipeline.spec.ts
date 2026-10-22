@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { gradient } from './fixtures';
+import { settle } from './util';
 
 async function setRange(page: Page, label: string, value: number) {
   await page.getByRole('slider', { name: label, exact: true }).evaluate((el, v) => {
@@ -10,7 +11,6 @@ async function setRange(page: Page, label: string, value: number) {
   }, value);
 }
 
-const settle = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
 const POINTS = [
   [0.2, 0.3],

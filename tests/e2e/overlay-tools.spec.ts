@@ -1,8 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import { encodePng } from '../../src/core/png';
 import { gradient, photo } from './fixtures';
+import { settle } from './util';
 
-const settle = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
 /** Pixel of the editor canvas at a world point of the 1600×1200 base photo (no crop, no zoom). */
 async function worldPixel(page: Page, wx: number, wy: number): Promise<number[]> {
@@ -53,7 +53,7 @@ test('remove background turns the returned cut-out into an undoable mask', async
   });
 
   await setup(page);
-  expect(isGradient(await worldPixel(page, 1000, 500))).toBe(true);
+  await expect.poll(async () => isGradient(await worldPixel(page, 1000, 500))).toBe(true);
   await page.getByTestId('layer-removebg').click();
   await expect(page.getByText('This sends this photo to Cloudflare')).toBeVisible();
   await page.getByTestId('removebg-confirm').click();
@@ -63,12 +63,12 @@ test('remove background turns the returned cut-out into an undoable mask', async
   expect(seen[0].type).toBe('image/jpeg');
   expect(seen[0].size).toBeGreaterThan(1000);
   // right half of the overlay is now transparent: the blue base shows through; left half is still the overlay
-  expect(isBlue(await worldPixel(page, 1000, 500))).toBe(true);
-  expect(isGradient(await worldPixel(page, 600, 500))).toBe(true);
+  await expect.poll(async () => isBlue(await worldPixel(page, 1000, 500))).toBe(true);
+  await expect.poll(async () => isGradient(await worldPixel(page, 600, 500))).toBe(true);
 
   await page.getByRole('button', { name: 'Undo' }).click();
   await settle(page);
-  expect(isGradient(await worldPixel(page, 1000, 500))).toBe(true);
+  await expect.poll(async () => isGradient(await worldPixel(page, 1000, 500))).toBe(true);
 
   // the notice is shown once; the second run goes straight to the request
   await page.getByRole('button', { name: 'Redo' }).click();
@@ -86,7 +86,7 @@ test('remove background errors leave the photo unchanged and explain why', async
   await page.getByTestId('removebg-confirm').click();
   await expect(page.locator('.toast')).toContainText('Too many requests');
   await settle(page);
-  expect(isGradient(await worldPixel(page, 1000, 500))).toBe(true);
+  await expect.poll(async () => isGradient(await worldPixel(page, 1000, 500))).toBe(true);
   await expect(page.getByRole('button', { name: 'Undo' })).toBeEnabled(); // only the layer add is undoable
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(page.getByRole('button', { name: 'Undo' })).toBeDisabled();
@@ -95,7 +95,7 @@ test('remove background errors leave the photo unchanged and explain why', async
 test('cropping an overlay keeps the visible part in place', async ({ page }) => {
   await setup(page);
   const centreBefore = await worldPixel(page, 800, 600);
-  expect(isGradient(await worldPixel(page, 400, 600))).toBe(true); // overlay source x ≈ 50
+  await expect.poll(async () => isGradient(await worldPixel(page, 400, 600))).toBe(true); // overlay source x ≈ 50
   await page.getByTestId('layer-crop').click();
   await expect(page.getByTestId('layer-crop-size')).toHaveText('600 × 400 px');
   await page.getByRole('button', { name: 'Square' }).click();
@@ -103,12 +103,12 @@ test('cropping an overlay keeps the visible part in place', async ({ page }) => 
   await page.getByTestId('layer-crop-done').click();
   await settle(page);
   // the cropped-away left strip now shows the red base; the overlay centre has not moved
-  expect(isRed(await worldPixel(page, 400, 600))).toBe(true);
+  await expect.poll(async () => isRed(await worldPixel(page, 400, 600))).toBe(true);
   const centreAfter = await worldPixel(page, 800, 600);
   for (let c = 0; c < 3; c++) expect(Math.abs(centreAfter[c] - centreBefore[c])).toBeLessThan(6);
   await page.getByRole('button', { name: 'Undo' }).click();
   await settle(page);
-  expect(isGradient(await worldPixel(page, 400, 600))).toBe(true);
+  await expect.poll(async () => isGradient(await worldPixel(page, 400, 600))).toBe(true);
 });
 
 test('undo and redo sit directly below the picture', async ({ page }) => {
