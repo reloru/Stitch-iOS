@@ -7,10 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
     "test": "vitest run",
     "e2e": "playwright test",
-    "check": "npm run typecheck && npm run test && npm run build && npm run e2e",
+    "check": "npm run typecheck && npm run test && npm run build && npm run e2e && npm run deploy:dry",
     "icons": "node scripts/icons.mjs",
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run"
@@ -19,6 +19,7 @@
     "preact": "^11.0.1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261022.1",
     "@playwright/test": "^1.56.1",
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2",

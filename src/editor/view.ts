@@ -1,6 +1,6 @@
 import { ADJUST_DEFAULTS, LOOK_DEFAULT } from '../core/adjust';
 import { checkerPattern, createCanvas, ctx2d, releaseCanvas } from '../core/canvas';
-import { outputSize, placementMat, worldToOutput, type Doc, type ImageLayer, type Layer } from '../core/doc';
+import { imageLayerMat, layerSize, outputSize, placementMat, worldToOutput, type Doc, type ImageLayer, type Layer } from '../core/doc';
 import {
   apply,
   chain,
@@ -246,7 +246,7 @@ export class EditorView {
   }
 
   private layerBox(l: Layer): { w: number; h: number } {
-    return l.kind === 'image' ? { w: l.src.width, h: l.src.height } : measureText(l);
+    return layerSize(l, measureText);
   }
 
   private layerScreenCorners(l: Layer): Pt[] {
@@ -424,7 +424,7 @@ export class EditorView {
     if (sel === 'base') return { mask: d.base.mask, wfs: d.geo.orient, layer: null };
     const l = d.layers.find((x) => x.id === sel);
     if (!l || l.kind !== 'image') return null;
-    return { mask: l.mask, wfs: placementMat(l.t, l.src.width, l.src.height), layer: l };
+    return { mask: l.mask, wfs: imageLayerMat(l), layer: l };
   }
 
   private drawMaskOverlay() {

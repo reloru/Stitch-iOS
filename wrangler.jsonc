@@ -2,9 +2,23 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "stitch",
   "compatibility_date": "2026-10-22",
+  // Only /api/* reaches the Worker; everything else is served straight from the static assets.
+  "main": "worker/index.ts",
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
   },
+  "images": {
+    "binding": "IMAGES"
+  },
+  "ratelimits": [
+    {
+      "name": "REMOVE_BG_LIMIT",
+      "namespace_id": "47213",
+      "simple": { "limit": 20, "period": 60 }
+    }
+  ],
+  "observability": { "enabled": true },
   "workers_dev": true
 }

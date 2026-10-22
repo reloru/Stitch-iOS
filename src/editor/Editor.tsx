@@ -17,6 +17,7 @@ import {
   rotateCW,
   setAngle,
   setAspect,
+  setLayerCrop,
   updateLayer,
   type Doc,
   type ImageLayer,
@@ -29,6 +30,8 @@ import { cloneMask, createMask, fillMask, invertMask, readAlpha, touch, writeAlp
 import { disposeSource, loadSource, uid, type SourceImage } from '../core/source';
 import { Busy, Sheet, Slider, toast, usePicker } from '../ui/common';
 import { ExportSheet } from '../ui/ExportSheet';
+import { removeBackground } from '../core/removebg';
+import { CropSheet } from './CropSheet';
 import {
   IcAdjust,
   IcBack,
@@ -58,6 +61,7 @@ import {
 import { EditorView, MASK_DEFAULTS, type MaskSettings, type Tool } from './view';
 
 const maskIO = { read: readAlpha, write: writeAlpha };
+const BG_NOTICE_KEY = 'stitch.removebg.notice';
 
 const ASPECTS: { name: string; v: number | null | 'orig' }[] = [
   { name: 'Free', v: null },
@@ -113,6 +117,8 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   const [exporting, setExporting] = useState(false);
   const [editingText, setEditingText] = useState<string | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
+  const [bgConfirm, setBgConfirm] = useState<string | null>(null);
+  const [cropping, setCropping] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const ownedSources = useRef(new Set<SourceImage>([props.initial.base.src]));
@@ -198,17 +204,42 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
 
   const changed = hist.canUndo;
 
+  const doRemoveBg = async (id: string) => {
+    const d = docRef.current;
+    const layer = d.layers.find((l): l is ImageLayer => l.id === id && l.kind === 'image');
+    if (id !== 'base' && !layer) return;
+    const src = layer ? layer.src : d.base.src;
+    const existing = layer ? layer.mask : d.base.mask;
+    setBusy('Removing background…');
+    try {
+      const m = await removeBackground(src, existing);
+      const cur = docRef.current;
+      const next = layer ? updateLayer(cur, id, { mask: m }) : { ...cur, base: { ...cur.base, mask: m } };
+      viewRef.current?.maskChanged();
+      change(next, true);
+      toast('Background removed. Use the Mask tools to touch it up.');
+    } catch (e) {
+      toast((e as Error).message, 4000);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const requestRemoveBg = (id: string) => {
+    let ok = false;
+    try {
+      ok = localStorage.getItem(BG_NOTICE_KEY) === '1';
+    } catch {
+      /* storage unavailable: ask every time */
+    }
+    if (ok) void doRemoveBg(id);
+    else setBgConfirm(id);
+  };
+
   return (
     <>
       <div class="topbar">
         <button class="tb-btn" aria-label="Back" onClick={() => (changed ? setConfirmLeave(true) : props.onClose())}>
           <IcBack />
-        </button>
-        <button class="tb-btn" aria-label="Undo" disabled={!hist.canUndo} onClick={() => restore(hist.undo())}>
-          <IcUndo />
-        </button>
-        <button class="tb-btn" aria-label="Redo" disabled={!hist.canRedo} onClick={() => restore(hist.redo())}>
-          <IcRedo />
         </button>
         <div class="title">
           {(() => {
@@ -216,6 +247,23 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
             return `${s.w} × ${s.h}`;
           })()}
         </div>
+        <button class="tb-btn primary" onClick={() => setExporting(true)}>
+          <IcShare /> Save
+        </button>
+      </div>
+
+      <div class="topbar-space" />
+      <div class="stage" ref={hostRef}>
+        {hint && <div class="hint">{hint}</div>}
+      </div>
+      <div class="editbar">
+        <button class="tb-btn" aria-label="Undo" disabled={!hist.canUndo} onClick={() => restore(hist.undo())}>
+          <IcUndo />
+        </button>
+        <button class="tb-btn" aria-label="Redo" disabled={!hist.canRedo} onClick={() => restore(hist.redo())}>
+          <IcRedo />
+        </button>
+        <span class="spacer" />
         {(tool === 'adjust' || tool === 'filters') && (
           <button
             class="tb-btn"
@@ -228,14 +276,6 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
             <IcEye />
           </button>
         )}
-        <button class="tb-btn primary" onClick={() => setExporting(true)}>
-          <IcShare /> Save
-        </button>
-      </div>
-
-      <div class="topbar-space" />
-      <div class="stage" ref={hostRef}>
-        {hint && <div class="hint">{hint}</div>}
       </div>
 
       <div class="dock">
@@ -257,6 +297,8 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
                 setEditingText(t.id);
               }}
               editText={setEditingText}
+              removeBg={requestRemoveBg}
+              crop={setCropping}
             />
           )}
           {tool === 'mask' && (
@@ -268,6 +310,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
               setSettings={setMask}
               change={change}
               maskChanged={() => viewRef.current?.maskChanged()}
+              removeBg={requestRemoveBg}
             />
           )}
         </div>
@@ -299,6 +342,45 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
           onClose={() => {
             change(docRef.current, true);
             setEditingText(null);
+          }}
+        />
+      )}
+      {bgConfirm && (
+        <Sheet title="Remove background" onClose={() => setBgConfirm(null)}>
+          <p class="note">
+            This sends this photo to Cloudflare, which finds the subject and returns a cut-out. Stitch doesn’t store it. Everything
+            else in Stitch stays on your phone. Needs an internet connection.
+          </p>
+          <div class="actions">
+            <button class="btn" onClick={() => setBgConfirm(null)}>
+              Cancel
+            </button>
+            <button
+              class="btn primary"
+              data-testid="removebg-confirm"
+              onClick={() => {
+                try {
+                  localStorage.setItem(BG_NOTICE_KEY, '1');
+                } catch {
+                  /* ignore */
+                }
+                const id = bgConfirm;
+                setBgConfirm(null);
+                void doRemoveBg(id);
+              }}
+            >
+              Continue
+            </button>
+          </div>
+        </Sheet>
+      )}
+      {cropping && (doc.layers.find((l) => l.id === cropping)?.kind === 'image') && (
+        <CropSheet
+          layer={doc.layers.find((l) => l.id === cropping) as ImageLayer}
+          onClose={() => setCropping(null)}
+          onDone={(r) => {
+            change(setLayerCrop(docRef.current, cropping, r), true);
+            setCropping(null);
           }}
         />
       )}
@@ -519,6 +601,8 @@ function LayersPanel(props: {
   addPhoto: () => void;
   addText: () => void;
   editText: (id: string) => void;
+  removeBg: (id: string) => void;
+  crop: (id: string) => void;
 }) {
   const { doc, selected, change } = props;
   const l = doc.layers.find((x) => x.id === selected) ?? null;
@@ -561,6 +645,16 @@ function LayersPanel(props: {
 
       {l && (
         <>
+          {l.kind === 'image' && (
+            <div class="row">
+              <button class="btn primary" onClick={() => props.removeBg(l.id)} data-testid="layer-removebg">
+                <IcWand /> Remove background
+              </button>
+              <button class="btn" onClick={() => props.crop(l.id)} data-testid="layer-crop">
+                <IcCrop /> Crop{l.crop ? ' ·' : ''}
+              </button>
+            </div>
+          )}
           <Slider
             name="Opacity"
             min={0}
@@ -704,6 +798,7 @@ function MaskPanel(props: {
   setSettings: (m: MaskSettings) => void;
   change: (d: Doc, c: boolean) => void;
   maskChanged: () => void;
+  removeBg: (id: string) => void;
 }) {
   const { doc, settings: ms, setSettings } = props;
   const set = (p: Partial<MaskSettings>) => setSettings({ ...ms, ...p });
@@ -806,6 +901,9 @@ function MaskPanel(props: {
         </>
       )}
       <div class="row scroll">
+        <button class="btn primary" disabled={!targetSrc} onClick={() => props.removeBg(props.selected)}>
+          <IcWand /> Remove background
+        </button>
         <button class="btn" disabled={!targetSrc} onClick={() => op(invertMask)}>
           <IcInvert /> Invert
         </button>

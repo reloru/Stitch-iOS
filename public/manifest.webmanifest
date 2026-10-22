@@ -1,7 +1,7 @@
 {
   "name": "Stitch — Photo Editor",
   "short_name": "Stitch",
-  "description": "Edit, overlay, mask and stitch photos on your phone. Everything stays on the device.",
+  "description": "Edit, overlay, mask and stitch photos on your phone.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
