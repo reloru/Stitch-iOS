@@ -16,6 +16,8 @@ export interface SourceImage {
   height: number;
   /** True if the original was larger than the device can render and `width/height` are downscaled. */
   capped: boolean;
+  /** false when the file format cannot hold transparency (JPEG/HEIC) */
+  alpha: boolean;
   /** ≤ PROXY_MAX canvas used for all interactive rendering. */
   proxy: HTMLCanvasElement;
   /** proxy.width / width */
@@ -47,6 +49,7 @@ export async function loadSource(blob: Blob, name = 'Photo'): Promise<SourceImag
       width,
       height,
       capped: cap < 1,
+      alpha: !/^image\/(jpe?g|heic|heif)$/i.test(blob.type),
       proxy,
       proxyScale: proxy.width / width,
       thumbUrl,
@@ -56,9 +59,12 @@ export async function loadSource(blob: Blob, name = 'Photo'): Promise<SourceImag
   }
 }
 
-/** Creates a source from a canvas we rendered ourselves (e.g. a stitched result sent to the editor). */
-export async function sourceFromCanvas(c: HTMLCanvasElement, name: string): Promise<SourceImage> {
-  const blob = await canvasToBlob(c, 'image/png');
+/**
+ * Creates a source from a canvas we rendered ourselves (a stitch or an applied edit). Opaque results are stored
+ * as JPEG 0.97, which keeps repeated applies small in memory with negligible generation loss; PNG otherwise.
+ */
+export async function sourceFromCanvas(c: HTMLCanvasElement, name: string, alpha = true): Promise<SourceImage> {
+  const blob = alpha ? await canvasToBlob(c, 'image/png') : await canvasToBlob(c, 'image/jpeg', 0.97);
   return loadSource(blob, name);
 }
 

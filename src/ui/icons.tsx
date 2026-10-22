@@ -75,4 +75,5 @@ export const IcGrid = (p: P) => <I {...p} d={['M4 4h7v7H4z', 'M13 4h7v7h-7z', 'M
 export const IcCols = (p: P) => <I {...p} d={['M4 4h7v16H4z', 'M13 4h7v16h-7z']} />;
 export const IcRows = (p: P) => <I {...p} d={['M4 4h16v7H4z', 'M4 13h16v7H4z']} />;
 export const IcEdit = (p: P) => <I {...p} d={['M4 20h4L19 9l-4-4L4 16v4z', 'M14 6l4 4']} />;
+export const IcMerge = (p: P) => <I {...p} d={['M4 4h6v6H4z', 'M14 14h6v6h-6z', 'M10 7h7v7', 'M14 17H7v-7']} />;
 export const IcFit = (p: P) => <I {...p} d={['M4 9V4h5', 'M20 9V4h-5', 'M4 15v5h5', 'M20 15v5h-5']} />;

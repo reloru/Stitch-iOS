@@ -1,9 +1,9 @@
 import { canvasLimits, canvasToBlob, createCanvas, ctx2d, fitScale, releaseCanvas } from './canvas';
-import { outputSize, type Doc } from './doc';
+import { newDoc, outputSize, type Doc } from './doc';
 import { releaseGL } from './gl';
 import { encodePng } from './png';
 import { renderDoc } from './render';
-import { decodeFull, type SourceImage } from './source';
+import { decodeFull, sourceFromCanvas, type SourceImage } from './source';
 import { computeLayout, drawStitch, type StitchLayout, type StitchSettings } from './stitch';
 
 export type Format = 'jpeg' | 'png';
@@ -32,30 +32,55 @@ export function docExportSize(doc: Doc, scale: number): { w: number; h: number; 
   return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)), s, limited: cap < scale };
 }
 
-export async function exportDoc(doc: Doc, format: Format, quality: number, scale: number): Promise<ExportResult> {
+/**
+ * Renders the document at `scale` (1 = full resolution, capped to the device limit) into a new canvas,
+ * decoding full-resolution sources only where the proxy would be upscaled. Caller releases the canvas.
+ */
+async function renderDocFull(doc: Doc, scale: number, forceBackground?: string): Promise<{ canvas: HTMLCanvasElement; w: number; h: number; limited: boolean }> {
   const size = docExportSize(doc, scale);
   const s = size.s;
-  // Decode full resolution only where the proxy would be upscaled.
   const needs = new Map<SourceImage, number>();
   needs.set(doc.base.src, s);
   for (const l of doc.layers) if (l.kind === 'image' && !l.hidden) needs.set(l.src, Math.max(needs.get(l.src) ?? 0, s * l.t.scale));
   const full = new Map<SourceImage, HTMLCanvasElement>();
   try {
     for (const [src, need] of needs) if (need > src.proxyScale * 1.01) full.set(src, await decodeFull(src));
-    const c = createCanvas(size.w, size.h);
+    const canvas = createCanvas(size.w, size.h);
     try {
-      renderDoc(ctx2d(c), doc, { scale: s, mode: 'export', full, forceBackground: format === 'jpeg' ? '#ffffff' : undefined });
-      for (const f of full.values()) releaseCanvas(f);
-      full.clear();
-      releaseGL();
-      const blob = await canvasToBlob(c, format === 'jpeg' ? 'image/jpeg' : 'image/png', quality);
-      return { blob, width: size.w, height: size.h, name: `stitch-${stamp()}.${format === 'jpeg' ? 'jpg' : 'png'}`, limited: size.limited };
-    } finally {
-      releaseCanvas(c);
+      renderDoc(ctx2d(canvas), doc, { scale: s, mode: 'export', full, forceBackground });
+    } catch (e) {
+      releaseCanvas(canvas);
+      throw e;
     }
+    return { canvas, w: size.w, h: size.h, limited: size.limited };
   } finally {
     for (const f of full.values()) releaseCanvas(f);
     releaseGL();
+  }
+}
+
+export async function exportDoc(doc: Doc, format: Format, quality: number, scale: number): Promise<ExportResult> {
+  const r = await renderDocFull(doc, scale, format === 'jpeg' ? '#ffffff' : undefined);
+  try {
+    const blob = await canvasToBlob(r.canvas, format === 'jpeg' ? 'image/jpeg' : 'image/png', quality);
+    return { blob, width: r.w, height: r.h, name: `stitch-${stamp()}.${format === 'jpeg' ? 'jpg' : 'png'}`, limited: r.limited };
+  } finally {
+    releaseCanvas(r.canvas);
+  }
+}
+
+/**
+ * Bakes everything (layers, text, masks, crop, straighten, adjustments, vignette) into one new photo and returns
+ * a fresh single-layer document for it. Transparency is kept (PNG). The old document is untouched, so undo works.
+ */
+export async function flattenDoc(doc: Doc): Promise<{ doc: Doc; src: SourceImage; limited: boolean }> {
+  const r = await renderDocFull(doc, 1);
+  try {
+    const alpha = doc.background === null && (doc.base.src.alpha || doc.base.mask !== null);
+    const src = await sourceFromCanvas(r.canvas, 'Photo', alpha);
+    return { doc: { ...newDoc(src), background: doc.background }, src, limited: r.limited };
+  } finally {
+    releaseCanvas(r.canvas);
   }
 }
 

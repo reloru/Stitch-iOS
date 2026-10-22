@@ -31,6 +31,7 @@ import { disposeSource, loadSource, uid, type SourceImage } from '../core/source
 import { Busy, Sheet, Slider, toast, usePicker } from '../ui/common';
 import { ExportSheet } from '../ui/ExportSheet';
 import { removeBackground } from '../core/removebg';
+import { flattenDoc } from '../core/export';
 import { CropSheet } from './CropSheet';
 import {
   IcAdjust,
@@ -46,7 +47,10 @@ import {
   IcGradient,
   IcInvert,
   IcLayers,
+  IcCheck,
+  IcClose,
   IcMask,
+  IcMerge,
   IcPhoto,
   IcRadial,
   IcRedo,
@@ -122,6 +126,8 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const ownedSources = useRef(new Set<SourceImage>([props.initial.base.src]));
+  /** documents produced by ✓ Apply (plus the photo as opened): ✗ Discard returns to the latest of these */
+  const checkpoints = useRef(new Set<Doc>([props.initial]));
 
   const sel = doc.layers.some((l) => l.id === selected) ? selected : 'base';
 
@@ -203,6 +209,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   })();
 
   const changed = hist.canUndo;
+  const dirty = !checkpoints.current.has(doc);
 
   const doRemoveBg = async (id: string) => {
     const d = docRef.current;
@@ -224,6 +231,42 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
       setBusy(null);
     }
   };
+  /**
+   * ✓ Apply: bakes everything so far into a new single photo; tools reset and new edits stack on top.
+   * The previous state stays in history, so Undo still steps back through it.
+   */
+  const apply = async (opts: { toAdjust?: boolean } = {}) => {
+    if (!dirty) return;
+    setBusy(docRef.current.layers.length ? 'Merging into one photo…' : 'Applying…');
+    try {
+      const r = await flattenDoc(docRef.current);
+      ownedSources.current.add(r.src);
+      checkpoints.current.add(r.doc);
+      change(r.doc, true);
+      setSelected('base');
+      setAspectLock(null);
+      if (opts.toAdjust) setTool('adjust');
+      toast(
+        r.limited
+          ? 'Applied (reduced to the largest size this phone can edit). New edits stack on top.'
+          : 'Applied. New edits stack on top; Undo steps back.',
+        3000,
+      );
+    } catch (e) {
+      toast(`Couldn't apply: ${(e as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const merge = () => apply({ toAdjust: true });
+
+  /** ✗ Discard: steps back through history to the last applied state (or the photo as opened). */
+  const discard = () => {
+    let d: Doc | null = hist.current;
+    while (!checkpoints.current.has(hist.current) && hist.canUndo) d = hist.undo();
+    restore(d ?? hist.current);
+  };
+
   const requestRemoveBg = (id: string) => {
     let ok = false;
     try {
@@ -276,10 +319,17 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
             <IcEye />
           </button>
         )}
+        <button class="tb-btn" aria-label="Discard changes" disabled={!dirty} onClick={discard} data-testid="discard">
+          <IcClose />
+        </button>
+        <button class="tb-btn apply" aria-label="Apply changes" disabled={!dirty} onClick={() => void apply()} data-testid="apply">
+          <IcCheck />
+        </button>
       </div>
 
       <div class="dock">
         <div class="panel">
+          {(tool === 'adjust' || tool === 'filters') && doc.layers.length > 0 && <MergeHint merge={merge} />}
           {tool === 'adjust' && <AdjustPanel doc={doc} target={target} change={change} />}
           {tool === 'filters' && <FiltersPanel doc={doc} target={target} change={change} />}
           {tool === 'crop' && <CropPanel doc={doc} aspect={aspect} setAspect={setAspectLock} change={change} />}
@@ -299,6 +349,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
               editText={setEditingText}
               removeBg={requestRemoveBg}
               crop={setCropping}
+              merge={merge}
             />
           )}
           {tool === 'mask' && (
@@ -403,6 +454,19 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
+
+function MergeHint(props: { merge: () => void }) {
+  return (
+    <div class="row">
+      <span class="label" style={{ flex: 1 }}>
+        This edits one layer. Merge (or ✓) to edit the whole picture.
+      </span>
+      <button class="btn" onClick={props.merge} data-testid="merge-hint">
+        <IcMerge /> Merge layers
+      </button>
+    </div>
+  );
+}
 
 function TargetLabel(props: { target: Target | null }) {
   return (
@@ -603,6 +667,7 @@ function LayersPanel(props: {
   editText: (id: string) => void;
   removeBg: (id: string) => void;
   crop: (id: string) => void;
+  merge: () => void;
 }) {
   const { doc, selected, change } = props;
   const l = doc.layers.find((x) => x.id === selected) ?? null;
@@ -616,6 +681,11 @@ function LayersPanel(props: {
         <button class="btn" onClick={props.addText} data-testid="add-text-layer">
           <IcText /> Text
         </button>
+        {doc.layers.length > 0 && (
+          <button class="btn" onClick={props.merge} data-testid="merge-layers">
+            <IcMerge /> Merge
+          </button>
+        )}
         {[...doc.layers].reverse().map((x) => (
           <button key={x.id} class={'layer-chip' + (x.id === selected ? ' on' : '')} onClick={() => props.select(x.id)}>
             <LayerThumb layer={x} doc={doc} />
