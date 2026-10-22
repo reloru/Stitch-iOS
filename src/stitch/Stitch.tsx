@@ -103,7 +103,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
     } finally {
       setBusy(null);
     }
-  }, true);
+  }, true, 'pick-more');
 
   const move = (dir: -1 | 1) => {
     const j = sel + dir;

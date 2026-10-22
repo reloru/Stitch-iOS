@@ -179,7 +179,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
     } finally {
       setBusy(null);
     }
-  }, false);
+  }, false, 'pick-layer');
 
   const target = targetOf(doc, sel);
   const selLayer = doc.layers.find((l) => l.id === sel) ?? null;

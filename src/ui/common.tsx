@@ -94,7 +94,7 @@ export function Busy(props: { text: string | null }) {
 }
 
 /** Hidden file input opened programmatically (iOS shows the Photos picker for accept="image/*"). */
-export function usePicker(onFiles: (files: File[]) => void, multiple: boolean) {
+export function usePicker(onFiles: (files: File[]) => void, multiple: boolean, testId?: string) {
   const ref = useRef<HTMLInputElement>(null);
   const input = (
     <input
@@ -103,7 +103,7 @@ export function usePicker(onFiles: (files: File[]) => void, multiple: boolean) {
       type="file"
       accept="image/*"
       multiple={multiple}
-      data-testid={multiple ? 'pick-multi' : 'pick-one'}
+      data-testid={testId ?? (multiple ? 'pick-multi' : 'pick-one')}
       onChange={(e) => {
         const el = e.target as HTMLInputElement;
         const files = Array.from(el.files ?? []);

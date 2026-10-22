@@ -54,6 +54,9 @@ function canDraw(w: number, h: number): boolean {
 /** Probes the largest canvas this browser will actually draw into (silently-blank canvases fail the read-back). */
 export function canvasLimits(): CanvasLimits {
   if (cached) return cached;
+  // Test hook: e2e tests emulate iOS's smaller canvas limit in Chromium.
+  const forced = (globalThis as { __stitchLimits?: CanvasLimits }).__stitchLimits;
+  if (forced) return (cached = forced);
   let maxSide = 2048;
   for (const s of SIDE_CANDIDATES) {
     if (canDraw(s, 1) && canDraw(1, s)) {
