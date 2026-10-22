@@ -208,12 +208,6 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
         <button class="tb-btn" aria-label="Back" onClick={() => (hist.canUndo ? setConfirmLeave(true) : props.onClose())}>
           <IcBack />
         </button>
-        <button class="tb-btn" aria-label="Undo" disabled={!hist.canUndo} onClick={() => restore(hist.undo())}>
-          <IcUndo />
-        </button>
-        <button class="tb-btn" aria-label="Redo" disabled={!hist.canRedo} onClick={() => restore(hist.redo())}>
-          <IcRedo />
-        </button>
         <div class="title">Stitch · {st.items.length}</div>
         <button class="tb-btn" aria-label="Edit result" onClick={toEditor} disabled={!st.items.length}>
           <IcEdit />
@@ -226,6 +220,14 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
       <div class="topbar-space" />
       <div class="stage" ref={hostRef}>
         {st.items.length > 0 && sel < 0 && <div class="hint">Tap a photo to trim or reorder it</div>}
+      </div>
+      <div class="editbar">
+        <button class="tb-btn" aria-label="Undo" disabled={!hist.canUndo} onClick={() => restore(hist.undo())}>
+          <IcUndo />
+        </button>
+        <button class="tb-btn" aria-label="Redo" disabled={!hist.canRedo} onClick={() => restore(hist.redo())}>
+          <IcRedo />
+        </button>
       </div>
 
       <div class="dock">

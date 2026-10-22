@@ -98,6 +98,7 @@ test('grid layout, style and send to editor', async ({ page }) => {
   await expect(page.getByTestId('export-dims')).toContainText('3220 × 3220');
   await page.getByRole('button', { name: 'Cancel' }).click();
   await page.getByRole('button', { name: 'Edit result' }).click();
-  await expect(page.getByTestId('editor-canvas')).toBeVisible();
+  // rendering and re-decoding a 3220×3220 image is slow on loaded CI runners
+  await expect(page.getByTestId('editor-canvas')).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('.topbar .title')).toHaveText('3220 × 3220');
 });

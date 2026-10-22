@@ -47,7 +47,7 @@ export function App() {
         <div class="home">
           <div class="status-cap" />
           <h1>Stitch</h1>
-          <p class="lead">Edit, overlay, mask and stitch photos. Everything stays on your phone.</p>
+          <p class="lead">Edit, overlay, mask and stitch photos. Editing happens on your phone; only Remove background uses the internet.</p>
           <button class="home-card" onClick={pickOne.open} data-testid="home-edit">
             <div class="ic" style={{ background: 'linear-gradient(135deg,#ffb35c,#ff5e7a)' }}>
               <IcPhoto />

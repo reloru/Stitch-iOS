@@ -72,3 +72,28 @@ describe('orientation ops', () => {
     expect(cropFits(sq.geo.crop, deg(12), 400, 300)).toBe(true);
   });
 });
+
+describe('overlay crop', () => {
+  it('keeps the visible pixels in place and maps masks through the crop', async () => {
+    const { newImageLayer, setLayerCrop, imageLayerMat, layerSize } = await import('../../src/core/doc');
+    const base = newDoc(src);
+    const overlaySrc = { id: 'o', name: 'o', width: 200, height: 100 } as unknown as SourceImage;
+    const l0 = newImageLayer(base, overlaySrc);
+    const d0 = { ...base, layers: [{ ...l0, t: { ...l0.t, rotation: deg(30), scale: 0.7, flipX: true } }] };
+    const probe = { x: 120, y: 60 }; // a source pixel inside the crop
+    const before = apply(imageLayerMat(d0.layers[0] as typeof l0), probe);
+    const d1 = setLayerCrop(d0, l0.id, { x: 100, y: 40, w: 80, h: 50 });
+    const l1 = d1.layers[0] as typeof l0;
+    const after = apply(imageLayerMat(l1), probe);
+    close(before.x, after.x, 1e-9);
+    close(before.y, after.y, 1e-9);
+    expect(layerSize(l1, () => ({ w: 0, h: 0 }))).toEqual({ w: 80, h: 50 });
+    // resetting to the full image restores null crop and the same mapping
+    const d2 = setLayerCrop(d1, l0.id, null);
+    const l2 = d2.layers[0] as typeof l0;
+    expect(l2.crop).toBeNull();
+    const again = apply(imageLayerMat(l2), probe);
+    close(again.x, before.x, 1e-9);
+    close(again.y, before.y, 1e-9);
+  });
+});

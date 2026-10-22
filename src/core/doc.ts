@@ -67,12 +67,22 @@ interface LayerCommon {
   t: Placement;
 }
 
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface ImageLayer extends LayerCommon {
   kind: 'image';
   src: SourceImage;
   adjust: Adjust;
   look: Look;
+  /** in full source pixels; masks stay in full source pixels and are cropped along with the image */
   mask: Mask | null;
+  /** visible part of the source, in source pixels; null = whole image */
+  crop: Rect | null;
 }
 
 export const FONTS: { id: string; name: string; css: string }[] = [
@@ -163,10 +173,38 @@ export function placementMat(t: Placement, srcW: number, srcH: number): Mat {
   );
 }
 
+export function layerRect(l: ImageLayer): Rect {
+  return l.crop ?? { x: 0, y: 0, w: l.src.width, h: l.src.height };
+}
+
+/** source px -> world px for an image layer, including its crop. Use this wherever layer pixels are mapped. */
+export function imageLayerMat(l: ImageLayer): Mat {
+  const r = layerRect(l);
+  return chain(placementMat(l.t, r.w, r.h), translate(-r.x, -r.y));
+}
+
 /** Natural (t.scale = 1) size in world px of a layer's content box. */
 export function layerSize(l: Layer, measure: (l: TextLayer) => { w: number; h: number }): { w: number; h: number } {
-  if (l.kind === 'image') return { w: l.src.width, h: l.src.height };
+  if (l.kind === 'image') {
+    const r = layerRect(l);
+    return { w: r.w, h: r.h };
+  }
   return measure(l);
+}
+
+/** Changes a photo layer's crop while keeping the visible pixels where they are in the picture. */
+export function setLayerCrop(doc: Doc, id: string, crop: Rect | null): Doc {
+  return {
+    ...doc,
+    layers: doc.layers.map((l) => {
+      if (l.id !== id || l.kind !== 'image') return l;
+      const full = { x: 0, y: 0, w: l.src.width, h: l.src.height };
+      const r = crop ?? full;
+      const isFull = r.x <= 0 && r.y <= 0 && r.w >= full.w && r.h >= full.h;
+      const c = apply(imageLayerMat(l), { x: r.x + r.w / 2, y: r.y + r.h / 2 });
+      return { ...l, crop: isFull ? null : r, t: { ...l.t, x: c.x, y: c.y } };
+    }),
+  };
 }
 
 export function layerCorners(l: Layer, size: { w: number; h: number }): Pt[] {
@@ -256,6 +294,7 @@ export function newImageLayer(doc: Doc, src: SourceImage): ImageLayer {
     adjust: { ...ADJUST_DEFAULTS },
     look: { ...LOOK_DEFAULT },
     mask: null,
+    crop: null,
   };
 }
 

@@ -1,12 +1,14 @@
 # Stitch
 
 Mobile-first photo editor (edit, overlay, mask, stitch) built as an installable PWA for iPhone Safari.
-All image processing runs client-side in the browser; there is no backend. Served as static assets
-from a Cloudflare Worker named `stitch` (https://stitch.reloru.workers.dev).
+Image processing runs client-side in the browser. The only server code is `worker/` (`POST /api/remove-bg`,
+Cloudflare Images `segment: "foreground"` via the Images binding, rate-limited per IP). Static files are served by
+Workers static assets on the Worker named `stitch` (https://stitch.reloru.workers.dev); `run_worker_first` sends only
+`/api/*` to the Worker.
 
 ## Checks
 
-- `npm run typecheck` — TypeScript (`tsc --noEmit`)
+- `npm run typecheck` — TypeScript for the app (`tsc --noEmit`) and the Worker (`tsc -p worker`, Workers types)
 - `npm test` — Vitest unit tests (`tests/unit`, Node environment; pure logic only)
 - `npm run build` — Vite production build into `dist/` (also emits `sw.js` and `version.json`)
 - `npm run e2e` — Playwright against `vite preview`, Chromium with iPhone 14 Pro Max emulation (`tests/e2e`). Run after `build`.
@@ -43,6 +45,10 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
   (screenshot overlap), `png` (streaming encoder), `export`, `source` (decode + proxies), `canvas` (limits, helpers).
 - `src/editor/` — `view.ts` is the imperative canvas/gesture engine; `Editor.tsx` is the Preact UI around it.
 - `src/stitch/` — same split for the stitcher.
+- `worker/` — `handler.ts` is pure (bindings injected, unit-tested in Node); `index.ts` wires `env.IMAGES` and
+  `env.REMOVE_BG_LIMIT`. E2E tests never call the real API: they intercept `/api/remove-bg` with `page.route`.
+- Overlay photos: `ImageLayer.crop` is in source px; always map layer pixels with `imageLayerMat(l)` (crop-aware),
+  and change crops via `setLayerCrop` so the visible pixels stay put. Masks stay in full source px.
 
 ## Testing notes
 

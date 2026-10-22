@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { overlay, photo } from './fixtures';
+import { settle } from './util';
 
 const SHOTS = process.env.SHOTS;
 
@@ -29,9 +30,6 @@ async function setRange(page: Page, label: string, value: number) {
   }, value);
 }
 
-async function settle(page: Page) {
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-}
 
 async function openPhoto(page: Page) {
   await page.goto('/');
@@ -155,9 +153,7 @@ test('overlay layer with blend mode, text layer and mask', async ({ page }) => {
 
   // undo restores the mask pixels
   await page.getByRole('button', { name: 'Undo' }).click();
-  await settle(page);
-  p = await pixel(page, 0.85, 0.4);
-  expect(p[2]).toBeGreaterThan(180);
+  await expect.poll(async () => (await pixel(page, 0.85, 0.4))[2]).toBeGreaterThan(180);
 
   // invert the mask -> whole background hidden, then export PNG keeps transparency
   await page.getByRole('button', { name: 'Invert' }).click();

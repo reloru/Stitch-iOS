@@ -1,6 +1,6 @@
 import { isIdentity, type Adjust, type Look } from './adjust';
 import { createCanvas, ctx2d, releaseCanvas } from './canvas';
-import { outputSize, placementMat, worldToOutput, type Doc, type Layer, type TextLayer } from './doc';
+import { layerRect, outputSize, placementMat, worldToOutput, type Doc, type Layer, type TextLayer } from './doc';
 import { chain, IDENTITY, scale, type Mat } from './geometry';
 import { renderAdjusted } from './gl';
 import type { Mask } from './mask';
@@ -140,8 +140,9 @@ export function drawLayer(ctx: CanvasRenderingContext2D, l: Layer, view: Mat, o:
   if (l.kind === 'image') {
     const r = imageRaster(l.id, l.src, l.adjust, l.look, l.mask, o);
     temps.push(...r.temp);
-    setMat(ctx, chain(view, placementMat(l.t, l.src.width, l.src.height), scale(1 / r.k)));
-    ctx.drawImage(r.canvas, 0, 0);
+    const c = layerRect(l);
+    setMat(ctx, chain(view, placementMat(l.t, c.w, c.h), scale(1 / r.k)));
+    ctx.drawImage(r.canvas, c.x * r.k, c.y * r.k, c.w * r.k, c.h * r.k, 0, 0, c.w * r.k, c.h * r.k);
   } else {
     const box = measureText(l);
     const pxPerUnit = o.scale * l.t.scale;
