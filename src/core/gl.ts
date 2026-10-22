@@ -197,16 +197,24 @@ class GLAdjuster {
 let shared: GLAdjuster | null = null;
 let glFailed = false;
 
+type Hooks = { __stitchForceCPU?: boolean; __stitchGL?: boolean };
+
 function adjuster(): GLAdjuster | null {
   if (glFailed) return null;
   if (!shared) {
+    // Test hook: e2e tests force the CPU path to compare it with the shader.
+    if ((globalThis as Hooks).__stitchForceCPU) {
+      glFailed = true;
+      return null;
+    }
     try {
       shared = new GLAdjuster();
       if (!shared.gl) {
         glFailed = true;
         shared = null;
-      }
-    } catch {
+      } else (globalThis as Hooks).__stitchGL = true;
+    } catch (e) {
+      console.warn('WebGL adjustments unavailable, using CPU fallback', e);
       glFailed = true;
       shared = null;
     }

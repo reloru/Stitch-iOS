@@ -31,3 +31,19 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
   probe the canvas size limit at runtime, release canvases (`width = height = 0`) after use, and call
   `navigator.share` only directly from a tap (render the file first, then show the Save button).
 - Icons: edit `public/icons/icon.svg`, then `npm run icons` to regenerate the PNGs.
+
+## Layout
+
+- `src/core/` — framework-free logic: `geometry` (matrices, crop fitting), `doc` (document model + orientation ops),
+  `adjust` + `gl` (colour pipeline; GLSL mirrors `adjustPixel`, keep them in sync — the parity e2e test enforces ±3),
+  `mask`, `history` (undo with shared mask snapshots), `render`, `text`, `stitch` (layout), `autostitch`
+  (screenshot overlap), `png` (streaming encoder), `export`, `source` (decode + proxies), `canvas` (limits, helpers).
+- `src/editor/` — `view.ts` is the imperative canvas/gesture engine; `Editor.tsx` is the Preact UI around it.
+- `src/stitch/` — same split for the stitcher.
+
+## Testing notes
+
+- E2E fixtures are generated in code (`tests/e2e/fixtures.ts`); there are no binary fixtures.
+- Test hooks read from `globalThis`: `__stitchLimits = { maxArea, maxSide }` emulates a device canvas limit;
+  `__stitchForceCPU = true` disables WebGL; `__stitchGL` is set when the shader initialised.
+- `SHOTS=<dir> npx playwright test` writes screenshots of key states for visual review.

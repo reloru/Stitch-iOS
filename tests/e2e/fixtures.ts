@@ -96,3 +96,10 @@ export async function screenshots(): Promise<{ files: Buffer[]; offsets: number[
 }
 
 export const SHOT = { w: SW, header: HEADER, footer: FOOTER, content: CONTENT };
+
+/** 600×400 smooth gradient (red by x, green by y), for comparing colour pipelines. */
+export async function gradient(): Promise<Buffer> {
+  const w = 600;
+  const h = 400;
+  return png(w, h, img(w, h, (x, y) => [Math.round((x / (w - 1)) * 255), Math.round((y / (h - 1)) * 255), 128, 255]));
+}
