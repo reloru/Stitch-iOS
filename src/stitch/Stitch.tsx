@@ -3,6 +3,7 @@ import { toGray, autoTrims, type Gray } from '../core/autostitch';
 import { ctx2d, releaseCanvas } from '../core/canvas';
 import { exportStitch, planStitchExport, renderStitchForEditor } from '../core/export';
 import { History } from '../core/history';
+import { autosaver, clearSession, saveStitch } from '../core/persist';
 import { decodeFull, disposeSource, loadSource, sourceFromCanvas, uid, type SourceImage } from '../core/source';
 import { NO_TRIM, STITCH_DEFAULTS, type StitchSettings, type Trim } from '../core/stitch';
 import { Busy, nextFrame, Scroller, Sheet, Slider, toast, useHint, usePicker } from '../ui/common';
@@ -42,8 +43,14 @@ export async function loadStitchItems(files: File[], onProgress?: (i: number) =>
   return out;
 }
 
-export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEdit: (src: SourceImage) => void }) {
-  const [st, setSt] = useState<StitchState>({ items: props.initial, settings: { ...STITCH_DEFAULTS } });
+export function Stitch(props: {
+  initial: StitchItem[];
+  initialSettings?: StitchSettings;
+  restored?: boolean;
+  onClose: () => void;
+  onEdit: (src: SourceImage) => void;
+}) {
+  const [st, setSt] = useState<StitchState>({ items: props.initial, settings: { ...STITCH_DEFAULTS, ...props.initialSettings } });
   const stRef = useRef(st);
   const hist = useMemo(() => new History<StitchState, never>(stRef.current, () => [], { read: () => new Uint8Array(), write: () => {} }), []);
   const [, setTick] = useState(0);
@@ -57,6 +64,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<StitchView | null>(null);
   const ownedSources = useRef(new Set<SourceImage>(props.initial.map((i) => i.src)));
+  const saver = useMemo(() => autosaver(() => saveStitch(stRef.current.items, stRef.current.settings)), []);
 
   const change = (next: StitchState, commit: boolean) => {
     stRef.current = next;
@@ -90,10 +98,24 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
     });
     viewRef.current = v;
     return () => {
+      void saver.stop();
       v.destroy();
       for (const s of ownedSources.current) disposeSource(s);
     };
   }, []);
+
+  // autosave: a new stitch is worth keeping as soon as it is open (choosing the photos is work too)
+  const histPos = hist.position;
+  useEffect(() => {
+    if (stRef.current.items.length) saver.request();
+  }, [histPos, hist.canRedo]);
+
+  const leave = async () => {
+    setConfirmLeave(false);
+    await saver.stop();
+    await clearSession();
+    props.onClose();
+  };
 
   useEffect(() => {
     viewRef.current?.update({ items: st.items, settings: st.settings, selected });
@@ -229,7 +251,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
   return (
     <>
       <div class="topbar">
-        <button class="tb-btn" aria-label="Back" onClick={() => (hist.canUndo ? setConfirmLeave(true) : props.onClose())}>
+        <button class="tb-btn" aria-label="Back" onClick={() => (hist.canUndo || props.restored ? setConfirmLeave(true) : void leave())}>
           <IcBack />
         </button>
         <div class="title">Stitch · {st.items.length}</div>
@@ -415,12 +437,12 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
       {exporting && <ExportSheetBase spec={exportSpec} onClose={() => setExporting(false)} />}
       {confirmLeave && (
         <Sheet title="Leave Stitch?" onClose={() => setConfirmLeave(false)}>
-          <p class="note">Your stitch is not saved until you tap Save. Leaving discards it.</p>
+          <p class="note">Leaving discards this stitch. To keep the picture, tap Save first.</p>
           <div class="actions">
             <button class="btn" onClick={() => setConfirmLeave(false)}>
               Keep editing
             </button>
-            <button class="btn danger" onClick={props.onClose}>
+            <button class="btn danger" onClick={() => void leave()}>
               Discard
             </button>
           </div>

@@ -31,6 +31,8 @@ after the first visit.
   (lossless), so the next edit stacks on top or applies to the whole picture. Undo steps back across it.
 - When there are photo layers, the chip under the picture picks which layer Adjust, Filters and Mask change.
 - Undo/redo for everything, including mask strokes.
+- Autosave: the open edit or stitch is kept on the phone (IndexedDB) and offered as "Continue" on the home screen, so
+  it survives iOS closing the app in the background.
 - Save: JPEG or PNG at full, 50% or 25% size, then **Save → Save Image** puts it in Photos.
 
 **Stitch photos**
