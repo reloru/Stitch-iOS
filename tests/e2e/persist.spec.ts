@@ -88,3 +88,37 @@ test('a stitch comes back with its order and trims', async ({ page }) => {
   await page.getByRole('button', { name: 'Photo 2' }).click();
   await expect(page.getByRole('slider', { name: 'Trim top', exact: true })).toHaveValue('100');
 });
+
+test('opening something else and backing out without changes keeps the saved edit', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('pick-one').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: await photo() });
+  await expect(page.getByTestId('editor-canvas')).toBeVisible();
+  await setRange(page, 'Saturation', -100);
+  await page.waitForTimeout(1500);
+  await page.reload();
+  await expect(page.getByTestId('home-resume')).toBeVisible();
+
+  // look at another photo, change nothing, go back
+  await page.getByTestId('pick-one').setInputFiles({ name: 'g.png', mimeType: 'image/png', buffer: await gradient() });
+  await expect(page.getByTestId('editor-canvas')).toBeVisible();
+  await page.waitForTimeout(1200);
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByTestId('home-resume')).toBeVisible();
+
+  // same for a stitch
+  await page.getByTestId('pick-multi').setInputFiles([
+    { name: 'a.png', mimeType: 'image/png', buffer: await gradient() },
+    { name: 'b.png', mimeType: 'image/png', buffer: await overlay() },
+  ]);
+  await expect(page.locator('.topbar .title')).toHaveText('Stitch · 2');
+  await page.waitForTimeout(1200);
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+
+  await page.reload();
+  await expect(page.getByTestId('home-resume')).toContainText('Continue editing');
+  await page.getByTestId('home-resume').click();
+  await expect(page.locator('.topbar .title')).toHaveText('1600 × 1200');
+  await expect(page.getByRole('slider', { name: 'Saturation', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Saturation', exact: true }).click();
+  await expect(page.getByRole('slider', { name: 'Saturation', exact: true })).toHaveValue('-100');
+});

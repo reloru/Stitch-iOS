@@ -64,7 +64,16 @@ export function Stitch(props: {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<StitchView | null>(null);
   const ownedSources = useRef(new Set<SourceImage>(props.initial.map((i) => i.src)));
-  const saver = useMemo(() => autosaver(() => saveStitch(stRef.current.items, stRef.current.settings)), []);
+  /** this stitch is the saved session (resumed, or autosaved): only then does leaving clear it */
+  const ownsSave = useRef(!!props.restored);
+  const saver = useMemo(
+    () =>
+      autosaver(async () => {
+        await saveStitch(stRef.current.items, stRef.current.settings);
+        ownsSave.current = true;
+      }),
+    [],
+  );
 
   const change = (next: StitchState, commit: boolean) => {
     stRef.current = next;
@@ -104,16 +113,16 @@ export function Stitch(props: {
     };
   }, []);
 
-  // autosave: a new stitch is worth keeping as soon as it is open (choosing the photos is work too)
+  // autosave after the first change (opening photos alone must not replace an older saved edit)
   const histPos = hist.position;
   useEffect(() => {
-    if (stRef.current.items.length) saver.request();
+    if ((hist.canUndo || props.restored) && stRef.current.items.length) saver.request();
   }, [histPos, hist.canRedo]);
 
   const leave = async () => {
     setConfirmLeave(false);
     await saver.stop();
-    await clearSession();
+    if (ownsSave.current) await clearSession();
     props.onClose();
   };
 

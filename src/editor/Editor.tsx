@@ -163,7 +163,16 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const ownedSources = useRef(sourcesOf(props.initial, new Set<SourceImage>()));
-  const saver = useMemo(() => autosaver(() => saveEditor(docRef.current)), []);
+  /** this screen's edit is the saved one (it was resumed, or has been autosaved): only then does leaving clear it */
+  const ownsSave = useRef(!!props.restored);
+  const saver = useMemo(
+    () =>
+      autosaver(async () => {
+        await saveEditor(docRef.current);
+        ownsSave.current = true;
+      }),
+    [],
+  );
   /** history position where the current tool session started: ✗ undoes back to it, ✓ moves it to now */
   const sessionPos = useRef(0);
 
@@ -231,7 +240,7 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
   const leave = async () => {
     setConfirmLeave(false);
     await saver.stop();
-    await clearSession();
+    if (ownsSave.current) await clearSession();
     props.onClose();
   };
 
