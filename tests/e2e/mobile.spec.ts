@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { gradient, overlay, photo } from './fixtures';
-import { settle } from './util';
+import { setRange, settle } from './util';
 
 /** Regression tests for phone-specific behaviour: gestures, hints, sheets, touch target sizes. */
 
@@ -157,13 +157,8 @@ test('controls are at least 44 pt tall', async ({ page }) => {
 
 test('tapping a slider value resets it', async ({ page }) => {
   await openPhoto(page);
+  await setRange(page, 'Contrast', 40);
   const s = page.getByRole('slider', { name: 'Contrast', exact: true });
-  await s.evaluate((el) => {
-    const i = el as HTMLInputElement;
-    i.value = '40';
-    i.dispatchEvent(new Event('input', { bubbles: true }));
-    i.dispatchEvent(new Event('change', { bubbles: true }));
-  });
   await expect(s).toHaveValue('40');
   await page.getByRole('button', { name: 'Reset Contrast' }).click();
   await expect(s).toHaveValue('0');
@@ -205,4 +200,90 @@ test('stitch: hold a thumbnail and drag it to reorder; a quick tap still selects
   // a quick tap selects (shows the trim controls)
   await page.getByRole('button', { name: 'Photo 2' }).tap();
   await expect(page.getByRole('button', { name: 'Remove photo' })).toBeVisible();
+});
+
+test('the picture keeps one size across every tool and panel state (430 and 375 pt wide)', async ({ page }) => {
+  for (const width of [430, 375]) {
+    await page.setViewportSize({ width, height: width === 430 ? 932 : 667 });
+    await openPhoto(page);
+    const heights = new Map<string, number>();
+    const record = async (label: string) => {
+      await settle(page);
+      heights.set(label, Math.round((await page.locator('.stage').boundingBox())!.height));
+    };
+    for (const tab of ['Adjust', 'Filters', 'Crop']) {
+      await page.getByRole('tab', { name: tab }).click();
+      await record(tab);
+    }
+    await page.getByRole('tab', { name: 'Overlay' }).click();
+    await record('Overlay, background');
+    await page.getByTestId('pick-layer').setInputFiles({ name: 'disc.png', mimeType: 'image/png', buffer: await overlay() });
+    await record('Overlay, photo layer');
+    for (const sub of ['Opacity', 'Blend', 'Arrange']) {
+      await page.getByRole('button', { name: sub, exact: true }).click();
+      await record(`Overlay, ${sub}`);
+    }
+    await page.getByTestId('add-text-layer').click();
+    await page.getByRole('button', { name: 'Done' }).click();
+    for (const sub of ['Edit', 'Font', 'Colour', 'Style']) {
+      await page.getByRole('button', { name: sub, exact: true }).click();
+      await record(`Overlay, text ${sub}`);
+    }
+    await page.getByRole('tab', { name: 'Adjust' }).click();
+    await record('Adjust with layer chip');
+    await page.getByRole('tab', { name: 'Mask' }).click();
+    for (const t of ['Brush', 'Linear', 'Radial', 'Color']) {
+      await page.getByRole('button', { name: t, exact: true }).click();
+      await record(`Mask ${t}`);
+    }
+    await page.getByTestId('mask-actions').click();
+    await record('Mask actions');
+    const values = [...heights.values()];
+    expect(new Set(values).size, JSON.stringify(Object.fromEntries(heights))).toBe(1);
+    // and it is the larger part of the screen
+    expect(values[0]).toBeGreaterThan((width === 430 ? 932 : 667) * (width === 430 ? 0.5 : 0.4));
+    // the layer chip under the picture fits beside the bar buttons
+    const bar = (await page.locator('.editbar').boundingBox())!;
+    const chip = (await page.getByTestId('target-chip').boundingBox())!;
+    expect(chip.x + chip.width).toBeLessThanOrEqual(bar.x + bar.width);
+    expect(chip.height).toBeGreaterThanOrEqual(44);
+  }
+});
+
+test('changing the brush size shows the brush outline on the picture', async ({ page }) => {
+  await openPhoto(page);
+  await page.getByRole('tab', { name: 'Mask' }).click();
+  await settle(page);
+  // a point on the outline of a 60 pt brush centred in the picture
+  const ring = async () =>
+    page.evaluate(() => {
+      const c = document.querySelector('[data-testid=editor-canvas]') as HTMLCanvasElement;
+      const dpr = c.width / c.getBoundingClientRect().width;
+      const d = c.getContext('2d')!.getImageData(Math.round(c.width / 2 + 60 * dpr), Math.round(c.height / 2), 1, 1).data;
+      return d[0] + d[1] + d[2];
+    });
+  const before = await ring();
+  await setRange(page, 'Size', 60, false);
+  await settle(page);
+  expect(await ring()).toBeGreaterThan(before + 150);
+  await page.waitForTimeout(1100);
+  await settle(page);
+  expect(Math.abs((await ring()) - before)).toBeLessThan(30);
+});
+
+test('hold-to-compare hides adjustments on overlay photos too', async ({ page }) => {
+  await openPhoto(page);
+  await page.getByRole('tab', { name: 'Overlay' }).click();
+  await page.getByTestId('pick-layer').setInputFiles({ name: 'disc.png', mimeType: 'image/png', buffer: await overlay() });
+  await page.getByRole('tab', { name: 'Adjust' }).click();
+  await expect(page.getByTestId('target-chip')).toContainText('disc');
+  await setRange(page, 'Saturation', -100);
+  const yellow = (p: number[]) => p[0] > 200 && p[1] > 180 && p[2] < 90;
+  await expect.poll(async () => yellow(await pixel(page, 0.5, 0.5))).toBe(false);
+  const eye = (await page.getByRole('button', { name: 'Hold to compare without adjustments' }).boundingBox())!;
+  await page.mouse.move(eye.x + eye.width / 2, eye.y + eye.height / 2);
+  await page.mouse.down();
+  await expect.poll(async () => yellow(await pixel(page, 0.5, 0.5))).toBe(true);
+  await page.mouse.up();
+  await expect.poll(async () => yellow(await pixel(page, 0.5, 0.5))).toBe(false);
 });

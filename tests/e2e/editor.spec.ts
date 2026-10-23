@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { overlay, photo } from './fixtures';
-import { settle } from './util';
+import { editLayer, setRange, settle } from './util';
 
 const SHOTS = process.env.SHOTS;
 
@@ -20,15 +20,6 @@ async function pixel(page: Page, fx: number, fy: number): Promise<number[]> {
   );
 }
 
-async function setRange(page: Page, label: string, value: number) {
-  const input = page.getByRole('slider', { name: label, exact: true });
-  await input.evaluate((el, v) => {
-    const i = el as HTMLInputElement;
-    i.value = String(v);
-    i.dispatchEvent(new Event('input', { bubbles: true }));
-    i.dispatchEvent(new Event('change', { bubbles: true }));
-  }, value);
-}
 
 
 async function openPhoto(page: Page) {
@@ -108,6 +99,7 @@ test('overlay layer with blend mode, text layer and mask', async ({ page }) => {
   expect(p[2]).toBeLessThan(90);
   await shot(page, '06-overlay');
 
+  await page.getByRole('button', { name: 'Blend', exact: true }).click();
   await page.getByRole('button', { name: 'Multiply' }).click();
   await settle(page);
   p = await pixel(page, 0.5, 0.5);
@@ -135,10 +127,9 @@ test('overlay layer with blend mode, text layer and mask', async ({ page }) => {
 
   // mask: hide part of the background photo with the brush
   await page.getByRole('tab', { name: 'Mask' }).click();
-  await page.locator('.layer-chip', { hasText: 'Background' }).click();
+  await editLayer(page, 'Background');
   await page.getByRole('button', { name: 'Show mask overlay' }).click();
   await settle(page);
-  // the dock is taller in Mask mode, so the canvas has a new size
   const mbox = (await page.getByTestId('editor-canvas').boundingBox())!;
   await page.mouse.move(mbox.x + mbox.width * 0.85, mbox.y + mbox.height * 0.35);
   await page.mouse.down();
@@ -156,6 +147,7 @@ test('overlay layer with blend mode, text layer and mask', async ({ page }) => {
   await expect.poll(async () => (await pixel(page, 0.85, 0.4))[2]).toBeGreaterThan(180);
 
   // invert the mask -> whole background hidden, then export PNG keeps transparency
+  await page.getByTestId('mask-actions').click();
   await page.getByRole('button', { name: 'Invert' }).click();
   await settle(page);
   await page.getByRole('button', { name: 'Save' }).click();

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { ADJUST_DEFAULTS, ADJUST_UI, FILTERS, LOOK_DEFAULT, type Adjust, type Look } from '../core/adjust';
+import { ADJUST_DEFAULTS, ADJUST_UI, FILTERS, type Adjust, type AdjustKey, type Look } from '../core/adjust';
 import { canvasToBlob, downscale, releaseCanvas } from '../core/canvas';
 import {
   BLEND_MODES,
@@ -87,6 +87,31 @@ const TOOLS: { id: Tool; name: string; Icon: typeof IcAdjust }[] = [
   { id: 'mask', name: 'Mask', Icon: IcMask },
 ];
 
+type AdjustParam = AdjustKey | 'vignette';
+const ADJUST_PARAMS: { key: AdjustParam; name: string; min: number; max: number }[] = [
+  ...ADJUST_UI,
+  { key: 'vignette', name: 'Vignette', min: 0, max: 100 },
+];
+
+type OverlaySub = 'cutout' | 'text' | 'font' | 'colour' | 'style' | 'opacity' | 'blend' | 'arrange';
+const IMAGE_SUBS: { id: OverlaySub; name: string }[] = [
+  { id: 'cutout', name: 'Cut out' },
+  { id: 'opacity', name: 'Opacity' },
+  { id: 'blend', name: 'Blend' },
+  { id: 'arrange', name: 'Arrange' },
+];
+const TEXT_SUBS: { id: OverlaySub; name: string }[] = [
+  { id: 'text', name: 'Edit' },
+  { id: 'font', name: 'Font' },
+  { id: 'colour', name: 'Colour' },
+  { id: 'style', name: 'Style' },
+  { id: 'opacity', name: 'Opacity' },
+  { id: 'blend', name: 'Blend' },
+  { id: 'arrange', name: 'Arrange' },
+];
+
+type BrushSetting = 'size' | 'hardness' | 'flow';
+
 interface Target {
   id: string;
   name: string;
@@ -96,7 +121,7 @@ interface Target {
 }
 
 function targetOf(doc: Doc, selected: string): Target | null {
-  if (selected === 'base') return { id: 'base', name: 'Photo', src: doc.base.src, adjust: doc.base.adjust, look: doc.base.look };
+  if (selected === 'base') return { id: 'base', name: 'Background', src: doc.base.src, adjust: doc.base.adjust, look: doc.base.look };
   const l = doc.layers.find((x) => x.id === selected);
   if (!l || l.kind !== 'image') return null;
   return { id: l.id, name: l.name, src: l.src, adjust: l.adjust, look: l.look };
@@ -105,6 +130,11 @@ function targetOf(doc: Doc, selected: string): Target | null {
 function patchTarget(doc: Doc, id: string, patch: { adjust?: Adjust; look?: Look }): Doc {
   if (id === 'base') return { ...doc, base: { ...doc.base, ...patch } };
   return updateLayer(doc, id, patch);
+}
+
+function sourcesOf(d: Doc, into: Set<SourceImage>) {
+  into.add(d.base.src);
+  for (const l of d.layers) if (l.kind === 'image') into.add(l.src);
 }
 
 export function Editor(props: { initial: Doc; onClose: () => void }) {
@@ -123,11 +153,16 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [bgConfirm, setBgConfirm] = useState<string | null>(null);
   const [cropping, setCropping] = useState<string | null>(null);
+  const [picking, setPicking] = useState(false);
+  const [adjustParam, setAdjustParam] = useState<AdjustParam>('exposure');
+  const [overlaySub, setOverlaySub] = useState<OverlaySub>('cutout');
+  const [maskActions, setMaskActions] = useState(false);
+  const [brushSetting, setBrushSetting] = useState<BrushSetting>('size');
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const ownedSources = useRef(new Set<SourceImage>([props.initial.base.src]));
-  /** documents produced by ✓ Apply (plus the photo as opened): ✗ Discard returns to the latest of these */
-  const checkpoints = useRef(new Set<Doc>([props.initial]));
+  /** history position where the current tool session started: ✗ undoes back to it, ✓ moves it to now */
+  const sessionPos = useRef(0);
 
   const sel = doc.layers.some((l) => l.id === selected) ? selected : 'base';
 
@@ -143,6 +178,8 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
     if (!d) return;
     docRef.current = d;
     setDocState(d);
+    // undoing past the start of the tool session moves the session start back with it
+    if (hist.position < sessionPos.current) sessionPos.current = hist.position;
     viewRef.current?.maskChanged();
     setTick((t) => t + 1);
   };
@@ -184,6 +221,20 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
     viewRef.current?.update({ doc, tool, selected: sel, mask, aspect, compare });
   }, [doc, tool, sel, mask, aspect, compare]);
 
+  // Free photos (decoded proxies, thumbnails) that nothing can reach any more: not the current document and not any
+  // document in undo/redo. Skipped while something asynchronous may still hold one.
+  useEffect(() => {
+    if (busy || exporting || cropping) return;
+    const live = new Set<SourceImage>();
+    for (const d of hist.docs()) sourcesOf(d, live);
+    sourcesOf(docRef.current, live);
+    for (const s of ownedSources.current) {
+      if (live.has(s)) continue;
+      disposeSource(s);
+      ownedSources.current.delete(s);
+    }
+  });
+
   const addPhoto = usePicker(async (files) => {
     setBusy('Opening photo…');
     try {
@@ -193,6 +244,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
       const layer = newImageLayer(d, src);
       change({ ...d, layers: [...d.layers, layer] }, true);
       setSelected(layer.id);
+      setOverlaySub('cutout');
       setTool('layers');
     } catch (e) {
       toast((e as Error).message);
@@ -203,11 +255,12 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
 
   const target = targetOf(doc, sel);
   const selLayer = doc.layers.find((l) => l.id === sel) ?? null;
+  const photoLayers = doc.layers.filter((l): l is ImageLayer => l.kind === 'image');
 
   const hint = (() => {
     if (tool === 'crop') return 'Drag edges to crop · drag inside to move · pinch to zoom';
     if (tool === 'layers') return doc.layers.length ? 'Drag to move · pinch or use the handle to resize and rotate' : 'Add a photo or text overlay below';
-    if (tool === 'mask') {
+    if (tool === 'mask' && !maskActions) {
       if (mask.tool === 'brush') return `Paint to ${mask.mode === 'hide' ? 'hide' : 'reveal'} · two fingers to zoom`;
       if (mask.tool === 'linear') return 'Drag: kept at the start, faded out at the end';
       if (mask.tool === 'radial') return `Drag from the centre outward to ${mask.mode === 'hide' ? 'hide inside' : 'keep inside'}`;
@@ -221,7 +274,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   const flush = () => viewRef.current?.settle();
 
   const changed = hist.canUndo;
-  const dirty = !checkpoints.current.has(doc);
+  const dirty = hist.position !== sessionPos.current;
 
   const doRemoveBg = async (id: string) => {
     const d = docRef.current;
@@ -243,42 +296,57 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
       setBusy(null);
     }
   };
+
   /**
-   * ✓ Apply: bakes everything so far into a new single photo; tools reset and new edits stack on top.
-   * The previous state stays in history, so Undo still steps back through it.
+   * Merge: bakes everything (layers, crop, adjustments, masks) into one new photo, stored losslessly (PNG). New edits
+   * then apply to the whole picture. The previous state stays in history, so Undo steps back through it.
    */
-  const apply = async (opts: { toAdjust?: boolean } = {}) => {
+  const merge = async () => {
     flush();
-    if (checkpoints.current.has(docRef.current)) return;
-    setBusy(docRef.current.layers.length ? 'Merging into one photo…' : 'Applying…');
+    const layered = docRef.current.layers.length > 0;
+    setBusy(layered ? 'Merging into one photo…' : 'Flattening edits…');
     try {
       const r = await flattenDoc(docRef.current);
       ownedSources.current.add(r.src);
-      checkpoints.current.add(r.doc);
       change(r.doc, true);
+      sessionPos.current = hist.position;
       setSelected('base');
       setAspectLock(null);
-      if (opts.toAdjust) setTool('adjust');
+      setPicking(false);
       toast(
-        r.limited
-          ? 'Applied (reduced to the largest size this phone can edit). New edits stack on top.'
-          : 'Applied. New edits stack on top; Undo steps back.',
-        3000,
+        (layered ? 'Merged into one photo.' : 'Flattened into the photo.') +
+          (r.limited ? ' (Reduced to the largest size this phone can edit.)' : '') +
+          ' New edits apply to the whole picture; Undo steps back.',
+        3500,
       );
     } catch (e) {
-      toast(`Couldn't apply: ${(e as Error).message}`);
+      toast(`Couldn't merge: ${(e as Error).message}`);
     } finally {
       setBusy(null);
     }
   };
-  const merge = () => apply({ toAdjust: true });
 
-  /** ✗ Discard: steps back through history to the last applied state (or the photo as opened). */
-  const discard = () => {
+  /** ✓ keeps this tool's changes (ends the session); ✗ undoes back to where the session started. */
+  const keep = () => {
     flush();
-    let d: Doc | null = hist.current;
-    while (!checkpoints.current.has(hist.current) && hist.canUndo) d = hist.undo();
+    sessionPos.current = hist.position;
+    setTick((t) => t + 1);
+  };
+  const cancel = () => {
+    flush();
+    let d: Doc | null = null;
+    while (hist.position > sessionPos.current && hist.canUndo) d = hist.undo();
+    sessionPos.current = hist.position;
     restore(d ?? hist.current);
+  };
+
+  const switchTool = (id: Tool) => {
+    flush();
+    sessionPos.current = hist.position;
+    setTool(id);
+    setMaskActions(false);
+    if ((id === 'adjust' || id === 'filters' || id === 'mask') && selLayer && selLayer.kind === 'text') setSelected('base');
+    setTick((t) => t + 1);
   };
 
   const requestRemoveBg = (id: string) => {
@@ -291,6 +359,8 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
     if (ok) void doRemoveBg(id);
     else setBgConfirm(id);
   };
+
+  const showTarget = (tool === 'adjust' || tool === 'filters' || tool === 'mask') && photoLayers.length > 0;
 
   return (
     <>
@@ -314,23 +384,39 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
         {hint && <div class={'hint' + (hintState.visible ? '' : ' gone')}>{hint}</div>}
       </div>
       <div class="editbar">
-        <button class="tb-btn" aria-label="Undo" disabled={!hist.canUndo} onClick={() => {
+        <button
+          class="tb-btn"
+          aria-label="Undo"
+          disabled={!hist.canUndo}
+          onClick={() => {
             flush();
             restore(hist.undo());
-          }}>
+          }}
+        >
           <IcUndo />
         </button>
-        <button class="tb-btn" aria-label="Redo" disabled={!hist.canRedo} onClick={() => {
+        <button
+          class="tb-btn"
+          aria-label="Redo"
+          disabled={!hist.canRedo}
+          onClick={() => {
             flush();
             restore(hist.redo());
-          }}>
+          }}
+        >
           <IcRedo />
         </button>
+        {showTarget && (
+          <button class="target-chip" onClick={() => setPicking(true)} aria-label={`Editing ${target?.name ?? 'Background'}. Change layer`} data-testid="target-chip">
+            <LayerThumb layer={sel === 'base' ? null : selLayer} doc={doc} />
+            <span class="ln">{target?.name ?? 'Background'}</span>
+          </button>
+        )}
         <span class="spacer" />
         {(tool === 'adjust' || tool === 'filters') && (
           <button
-            class="tb-btn"
-            aria-label="Hold to compare with original"
+            class={'tb-btn' + (compare ? ' on' : '')}
+            aria-label="Hold to compare without adjustments"
             onPointerDown={() => setCompare(true)}
             onPointerUp={() => setCompare(false)}
             onPointerCancel={() => setCompare(false)}
@@ -339,25 +425,40 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
             <IcEye />
           </button>
         )}
-        <button class="tb-btn" aria-label="Discard changes" disabled={!dirty} onClick={discard} data-testid="discard">
+        {tool === 'mask' && (
+          <button
+            class={'tb-btn' + (mask.show ? ' on' : '')}
+            aria-label="Show mask overlay"
+            aria-pressed={mask.show}
+            onClick={() => setMask({ ...mask, show: !mask.show })}
+          >
+            <IcMask />
+          </button>
+        )}
+        <button class="tb-btn" aria-label="Cancel changes" disabled={!dirty} onClick={cancel} data-testid="tool-cancel">
           <IcClose />
         </button>
-        <button class="tb-btn apply" aria-label="Apply changes" disabled={!dirty} onClick={() => void apply()} data-testid="apply">
+        <button class="tb-btn apply" aria-label="Keep changes" disabled={!dirty} onClick={keep} data-testid="tool-keep">
           <IcCheck />
         </button>
       </div>
 
       <div class="dock">
         <div class="panel">
-          {(tool === 'adjust' || tool === 'filters') && doc.layers.length > 0 && <MergeHint merge={merge} />}
-          {tool === 'adjust' && <AdjustPanel doc={doc} target={target} change={change} />}
+          {tool === 'adjust' && <AdjustPanel doc={doc} target={target} param={adjustParam} setParam={setAdjustParam} change={change} merge={merge} />}
           {tool === 'filters' && <FiltersPanel doc={doc} target={target} change={change} />}
           {tool === 'crop' && <CropPanel doc={doc} aspect={aspect} setAspect={setAspectLock} change={change} />}
           {tool === 'layers' && (
             <LayersPanel
               doc={doc}
               selected={sel}
-              select={setSelected}
+              select={(id) => {
+                setSelected(id);
+                const l = doc.layers.find((x) => x.id === id);
+                if (l) setOverlaySub(l.kind === 'text' ? 'text' : 'cutout');
+              }}
+              sub={overlaySub}
+              setSub={setOverlaySub}
               change={change}
               addPhoto={addPhoto.open}
               addText={() => {
@@ -365,6 +466,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
                 const t = newTextLayer(docRef.current);
                 change({ ...docRef.current, layers: [...docRef.current.layers, t] }, true);
                 setSelected(t.id);
+                setOverlaySub('text');
                 setEditingText(t.id);
               }}
               editText={openText}
@@ -377,9 +479,13 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
             <MaskPanel
               doc={doc}
               selected={sel}
-              select={setSelected}
               settings={mask}
               setSettings={setMask}
+              actions={maskActions}
+              setActions={setMaskActions}
+              brushSetting={brushSetting}
+              setBrushSetting={setBrushSetting}
+              previewBrush={() => viewRef.current?.previewBrush()}
               change={change}
               maskChanged={() => viewRef.current?.maskChanged()}
               removeBg={requestRemoveBg}
@@ -388,16 +494,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
         </div>
         <div class="tabs" role="tablist">
           {TOOLS.map(({ id, name, Icon }) => (
-            <button
-              key={id}
-              role="tab"
-              aria-selected={tool === id}
-              class={'tab' + (tool === id ? ' on' : '')}
-              onClick={() => {
-                setTool(id);
-                if ((id === 'adjust' || id === 'filters' || id === 'mask') && selLayer && selLayer.kind === 'text') setSelected('base');
-              }}
-            >
+            <button key={id} role="tab" aria-selected={tool === id} class={'tab' + (tool === id ? ' on' : '')} onClick={() => switchTool(id)}>
               <Icon />
               {name}
             </button>
@@ -406,6 +503,41 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
       </div>
       {addPhoto.input}
 
+      {picking && (
+        <Sheet title="Edit which layer?" onClose={() => setPicking(false)}>
+          <div class="row wrap">
+            {[...photoLayers].reverse().map((x) => (
+              <button
+                key={x.id}
+                class={'layer-chip' + (x.id === sel ? ' on' : '')}
+                onClick={() => {
+                  setSelected(x.id);
+                  setPicking(false);
+                }}
+              >
+                <LayerThumb layer={x} doc={doc} />
+                <span class="ln">{x.name}</span>
+              </button>
+            ))}
+            <button
+              class={'layer-chip' + (sel === 'base' ? ' on' : '')}
+              onClick={() => {
+                setSelected('base');
+                setPicking(false);
+              }}
+            >
+              <LayerThumb layer={null} doc={doc} />
+              <span class="ln">Background</span>
+            </button>
+          </div>
+          <p class="note">Adjustments, filters and masks change one layer. To edit the whole picture at once, merge the layers into one photo.</p>
+          <div class="actions">
+            <button class="btn" onClick={() => void merge()} data-testid="picker-merge">
+              <IcMerge /> Merge layers
+            </button>
+          </div>
+        </Sheet>
+      )}
       {exporting && <ExportSheet doc={doc} onClose={() => setExporting(false)} />}
       {editingText && (
         <TextSheet
@@ -446,7 +578,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
           </div>
         </Sheet>
       )}
-      {cropping && (doc.layers.find((l) => l.id === cropping)?.kind === 'image') && (
+      {cropping && doc.layers.find((l) => l.id === cropping)?.kind === 'image' && (
         <CropSheet
           layer={doc.layers.find((l) => l.id === cropping) as ImageLayer}
           onClose={() => setCropping(null)}
@@ -476,59 +608,52 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
 
 // ---------------------------------------------------------------------------
 
-function MergeHint(props: { merge: () => void }) {
-  return (
-    <div class="row">
-      <span class="label" style={{ flex: 1 }}>
-        This edits one layer. Merge (or ✓) to edit the whole picture.
-      </span>
-      <button class="btn" onClick={props.merge} data-testid="merge-hint">
-        <IcMerge /> Merge layers
-      </button>
-    </div>
-  );
-}
-
-function TargetLabel(props: { target: Target | null }) {
-  return (
-    <div class="row">
-      <span class="label">{props.target ? `Editing: ${props.target.name}` : 'Select a photo layer to adjust it'}</span>
-    </div>
-  );
-}
-
-function AdjustPanel(props: { doc: Doc; target: Target | null; change: (d: Doc, c: boolean) => void }) {
+function AdjustPanel(props: {
+  doc: Doc;
+  target: Target | null;
+  param: AdjustParam;
+  setParam: (p: AdjustParam) => void;
+  change: (d: Doc, c: boolean) => void;
+  merge: () => void;
+}) {
   const { doc, target, change } = props;
+  const params = target ? ADJUST_PARAMS : ADJUST_PARAMS.filter((p) => p.key === 'vignette');
+  const cur = params.find((p) => p.key === props.param) ?? params[0];
+  const valueOf = (k: AdjustParam) => (k === 'vignette' ? doc.vignette : (target?.adjust[k] ?? 0));
+  const set = (k: AdjustParam, v: number, commit: boolean) =>
+    change(k === 'vignette' ? { ...doc, vignette: v } : patchTarget(doc, target!.id, { adjust: { ...target!.adjust, [k]: v } }), commit);
+  const anyChanged = params.some((p) => valueOf(p.key) !== 0);
   return (
-    <div>
-      <TargetLabel target={target} />
-      {target &&
-        ADJUST_UI.map((a) => (
-          <Slider
-            key={a.key}
-            name={a.name}
-            min={a.min}
-            max={a.max}
-            value={target.adjust[a.key]}
-            onInput={(v) => change(patchTarget(doc, target.id, { adjust: { ...target.adjust, [a.key]: v } }), false)}
-            onCommit={(v) => change(patchTarget(doc, target.id, { adjust: { ...target.adjust, [a.key]: v } }), true)}
-          />
-        ))}
-      <Slider
-        name="Vignette"
-        min={0}
-        max={100}
-        value={doc.vignette}
-        onInput={(v) => change({ ...doc, vignette: v }, false)}
-        onCommit={(v) => change({ ...doc, vignette: v }, true)}
-      />
-      {target && (
-        <div class="row">
-          <button class="btn" onClick={() => change(patchTarget(doc, target.id, { adjust: { ...ADJUST_DEFAULTS } }), true)}>
-            Reset adjustments
+    <div class="pane">
+      <Scroller>
+        {params.map((p) => (
+          <button key={p.key} class={'chip' + (p.key === cur.key ? ' on' : '') + (valueOf(p.key) !== 0 ? ' dot' : '')} onClick={() => props.setParam(p.key)}>
+            {p.name}
           </button>
-        </div>
-      )}
+        ))}
+      </Scroller>
+      <Slider
+        key={cur.key}
+        name={cur.name}
+        min={cur.min}
+        max={cur.max}
+        value={valueOf(cur.key)}
+        onInput={(v) => set(cur.key, v, false)}
+        onCommit={(v) => set(cur.key, v, true)}
+      />
+      <div class="row">
+        <button
+          class="btn"
+          disabled={!anyChanged}
+          onClick={() => change({ ...(target ? patchTarget(doc, target.id, { adjust: { ...ADJUST_DEFAULTS } }) : doc), vignette: 0 }, true)}
+        >
+          Reset all
+        </button>
+        <span class="spacer" />
+        <button class="btn" onClick={props.merge} data-testid="flatten">
+          <IcMerge /> {doc.layers.length ? 'Merge' : 'Flatten'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -543,7 +668,7 @@ function FiltersPanel(props: { doc: Doc; target: Target | null; change: (d: Doc,
     let cancelled = false;
     (async () => {
       const p = target.src.proxy;
-      const k = 96 / Math.min(p.width, p.height);
+      const k = 132 / Math.min(p.width, p.height);
       const small = downscale(p, p.width, p.height, p.width * k, p.height * k);
       const out: Record<string, string> = {};
       for (const f of FILTERS) {
@@ -562,11 +687,10 @@ function FiltersPanel(props: { doc: Doc; target: Target | null; change: (d: Doc,
   }, [srcId, adjKey]);
   useEffect(() => () => Object.values(thumbs).forEach((u) => URL.revokeObjectURL(u)), [thumbs]);
 
-  if (!target) return <TargetLabel target={null} />;
+  if (!target) return <p class="note muted">Select a photo layer to add a filter.</p>;
   return (
-    <div>
-      <TargetLabel target={target} />
-      <div class="thumbs">
+    <div class="pane">
+      <Scroller class="thumbs">
         {FILTERS.map((f) => (
           <button
             key={f.id}
@@ -577,8 +701,8 @@ function FiltersPanel(props: { doc: Doc; target: Target | null; change: (d: Doc,
             {f.name}
           </button>
         ))}
-      </div>
-      {target.look.filter !== 'none' && (
+      </Scroller>
+      {target.look.filter !== 'none' ? (
         <Slider
           name="Strength"
           min={0}
@@ -588,13 +712,8 @@ function FiltersPanel(props: { doc: Doc; target: Target | null; change: (d: Doc,
           onInput={(v) => change(patchTarget(doc, target.id, { look: { ...target.look, strength: v } }), false)}
           onCommit={(v) => change(patchTarget(doc, target.id, { look: { ...target.look, strength: v } }), true)}
         />
-      )}
-      {target.look.filter !== 'none' && (
-        <div class="row">
-          <button class="btn" onClick={() => change(patchTarget(doc, target.id, { look: { ...LOOK_DEFAULT } }), true)}>
-            Remove filter
-          </button>
-        </div>
+      ) : (
+        <p class="note muted">Tap a look to apply it; Original removes it.</p>
       )}
     </div>
   );
@@ -610,7 +729,7 @@ function CropPanel(props: {
   const g = doc.geo;
   const origAspect = g.worldW / g.worldH;
   return (
-    <div>
+    <div class="pane">
       <Slider
         name="Straighten"
         min={-45}
@@ -682,6 +801,8 @@ function LayersPanel(props: {
   doc: Doc;
   selected: string;
   select: (id: string) => void;
+  sub: OverlaySub;
+  setSub: (s: OverlaySub) => void;
   change: (d: Doc, c: boolean) => void;
   addPhoto: () => void;
   addText: () => void;
@@ -693,8 +814,10 @@ function LayersPanel(props: {
   const { doc, selected, change } = props;
   const l = doc.layers.find((x) => x.id === selected) ?? null;
   const set = (patch: Partial<ImageLayer> | Partial<TextLayer>, commit: boolean) => change(updateLayer(doc, selected, patch), commit);
+  const subs = l ? (l.kind === 'text' ? TEXT_SUBS : IMAGE_SUBS) : [];
+  const sub = subs.find((s) => s.id === props.sub)?.id ?? subs[0]?.id;
   return (
-    <div>
+    <div class="pane">
       <Scroller class="layers">
         <button class="btn primary" onClick={props.addPhoto} data-testid="add-photo-layer">
           <IcPhoto /> Photo
@@ -720,7 +843,7 @@ function LayersPanel(props: {
       </Scroller>
 
       {!l && (
-        <div class="row wrap">
+        <Scroller>
           <span class="label">Behind transparent areas:</span>
           {[
             ['None', null],
@@ -731,12 +854,19 @@ function LayersPanel(props: {
               {name}
             </button>
           ))}
-        </div>
+        </Scroller>
       )}
 
       {l && (
         <>
-          {l.kind === 'image' && (
+          <Scroller>
+            {subs.map((s) => (
+              <button key={s.id} class={'chip' + (s.id === sub ? ' on' : '')} onClick={() => props.setSub(s.id)}>
+                {s.name}
+              </button>
+            ))}
+          </Scroller>
+          {sub === 'cutout' && l.kind === 'image' && (
             <div class="row">
               <button class="btn primary" onClick={() => props.removeBg(l.id)} data-testid="layer-removebg">
                 <IcWand /> Remove background
@@ -746,62 +876,122 @@ function LayersPanel(props: {
               </button>
             </div>
           )}
-          <Slider
-            name="Opacity"
-            min={0}
-            max={100}
-            neutral={100}
-            value={Math.round(l.opacity * 100)}
-            onInput={(v) => set({ opacity: v / 100 }, false)}
-            onCommit={(v) => set({ opacity: v / 100 }, true)}
-          />
-          <Scroller>
-            {BLEND_MODES.map((b) => (
-              <button key={b.id} class={'chip' + (l.blend === b.id ? ' on' : '')} onClick={() => set({ blend: b.id }, true)}>
-                {b.name}
+          {sub === 'opacity' && (
+            <Slider
+              name="Opacity"
+              min={0}
+              max={100}
+              neutral={100}
+              value={Math.round(l.opacity * 100)}
+              onInput={(v) => set({ opacity: v / 100 }, false)}
+              onCommit={(v) => set({ opacity: v / 100 }, true)}
+            />
+          )}
+          {sub === 'blend' && (
+            <Scroller>
+              {BLEND_MODES.map((b) => (
+                <button key={b.id} class={'chip' + (l.blend === b.id ? ' on' : '')} onClick={() => set({ blend: b.id }, true)}>
+                  {b.name}
+                </button>
+              ))}
+            </Scroller>
+          )}
+          {sub === 'arrange' && (
+            <div class="row">
+              <button class="icon-btn" aria-label="Bring forward" onClick={() => change(moveLayer(doc, l.id, 1), true)}>
+                <IcUp />
               </button>
-            ))}
-          </Scroller>
-          {l.kind === 'text' && <TextStyleRow layer={l} set={set} edit={() => props.editText(l.id)} />}
-          <div class="row">
-            <button class="icon-btn" aria-label="Bring forward" onClick={() => change(moveLayer(doc, l.id, 1), true)}>
-              <IcUp />
-            </button>
-            <button class="icon-btn" aria-label="Send backward" onClick={() => change(moveLayer(doc, l.id, -1), true)}>
-              <IcDown />
-            </button>
-            <button class="icon-btn" aria-label="Mirror" onClick={() => set({ t: { ...l.t, flipX: !l.t.flipX } }, true)}>
-              <IcFlipH />
-            </button>
-            <button
-              class="icon-btn"
-              aria-label="Duplicate"
-              onClick={() => {
-                const copy = {
-                  ...l,
-                  id: uid('layer'),
-                  t: { ...l.t, x: l.t.x + doc.geo.crop.w * 0.04, y: l.t.y + doc.geo.crop.h * 0.04 },
-                } as Layer;
-                if (copy.kind === 'image' && copy.mask) copy.mask = cloneMask(copy.mask);
-                change({ ...doc, layers: [...doc.layers, copy] }, true);
-                props.select(copy.id);
-              }}
-            >
-              <IcCopy />
-            </button>
-            <span class="spacer" />
-            <button
-              class="icon-btn"
-              aria-label="Delete layer"
-              style={{ color: 'var(--danger)' }}
-              onClick={() => {
-                change(removeLayer(doc, l.id), true);
-                props.select('base');
-              }}
-            >
-              <IcTrash />
-            </button>
-          </div>
+              <button class="icon-btn" aria-label="Send backward" onClick={() => change(moveLayer(doc, l.id, -1), true)}>
+                <IcDown />
+              </button>
+              <button class="icon-btn" aria-label="Mirror" onClick={() => set({ t: { ...l.t, flipX: !l.t.flipX } }, true)}>
+                <IcFlipH />
+              </button>
+              <button
+                class="icon-btn"
+                aria-label="Duplicate"
+                onClick={() => {
+                  const copy = {
+                    ...l,
+                    id: uid('layer'),
+                    t: { ...l.t, x: l.t.x + doc.geo.crop.w * 0.04, y: l.t.y + doc.geo.crop.h * 0.04 },
+                  } as Layer;
+                  if (copy.kind === 'image' && copy.mask) copy.mask = cloneMask(copy.mask);
+                  change({ ...doc, layers: [...doc.layers, copy] }, true);
+                  props.select(copy.id);
+                }}
+              >
+                <IcCopy />
+              </button>
+              <span class="spacer" />
+              <button
+                class="icon-btn"
+                aria-label="Delete layer"
+                style={{ color: 'var(--danger)' }}
+                onClick={() => {
+                  change(removeLayer(doc, l.id), true);
+                  props.select('base');
+                }}
+              >
+                <IcTrash />
+              </button>
+            </div>
+          )}
+          {l.kind === 'text' && sub === 'text' && (
+            <div class="row">
+              <button class="btn primary" onClick={() => props.editText(l.id)}>
+                <IcText /> Edit text
+              </button>
+              <span class="label">Double-tap the text in the picture to edit it too.</span>
+            </div>
+          )}
+          {l.kind === 'text' && sub === 'font' && (
+            <Scroller>
+              {FONTS.map((f) => (
+                <button key={f.id} class={'chip' + (l.font === f.id ? ' on' : '')} style={{ fontFamily: f.css }} onClick={() => set({ font: f.id }, true)}>
+                  {f.name}
+                </button>
+              ))}
+            </Scroller>
+          )}
+          {l.kind === 'text' && sub === 'colour' && (
+            <Scroller>
+              {SWATCHES.map((c) => (
+                <button
+                  key={c}
+                  aria-label={`Text colour ${c}`}
+                  class={'icon-btn' + (l.color === c ? ' on' : '')}
+                  style={{ background: c }}
+                  onClick={() => set({ color: c }, true)}
+                />
+              ))}
+              <input
+                type="color"
+                value={l.color}
+                aria-label="Custom colour"
+                onInput={(e) => set({ color: (e.target as HTMLInputElement).value }, false)}
+                onChange={() => set({}, true)}
+              />
+            </Scroller>
+          )}
+          {l.kind === 'text' && sub === 'style' && (
+            <Scroller>
+              <button class={'chip' + (l.bold ? ' on' : '')} onClick={() => set({ bold: !l.bold }, true)}>
+                Bold
+              </button>
+              <button class={'chip' + (l.shadow ? ' on' : '')} onClick={() => set({ shadow: !l.shadow }, true)}>
+                Shadow
+              </button>
+              <button class={'chip' + (l.bg ? ' on' : '')} onClick={() => set({ bg: l.bg ? null : l.color === '#000000' ? '#ffffff' : '#000000' }, true)}>
+                Box
+              </button>
+              {(['left', 'center', 'right'] as CanvasTextAlign[]).map((a) => (
+                <button key={a} class={'chip' + (l.align === a ? ' on' : '')} onClick={() => set({ align: a }, true)}>
+                  {a[0].toUpperCase() + a.slice(1)}
+                </button>
+              ))}
+            </Scroller>
+          )}
         </>
       )}
     </div>
@@ -809,52 +999,6 @@ function LayersPanel(props: {
 }
 
 const SWATCHES = ['#ffffff', '#000000', '#ffb35c', '#ff5e7a', '#5ce1e6', '#5b7cff', '#7ee081', '#ffe066'];
-
-function TextStyleRow(props: { layer: TextLayer; set: (p: Partial<TextLayer>, c: boolean) => void; edit: () => void }) {
-  const { layer: l, set } = props;
-  return (
-    <>
-      <Scroller>
-        <button class="btn" onClick={props.edit}>
-          <IcText /> Edit text
-        </button>
-        {FONTS.map((f) => (
-          <button key={f.id} class={'chip' + (l.font === f.id ? ' on' : '')} style={{ fontFamily: f.css }} onClick={() => set({ font: f.id }, true)}>
-            {f.name}
-          </button>
-        ))}
-      </Scroller>
-      <Scroller>
-        {SWATCHES.map((c) => (
-          <button
-            key={c}
-            aria-label={`Text colour ${c}`}
-            class={'icon-btn' + (l.color === c ? ' on' : '')}
-            style={{ background: c }}
-            onClick={() => set({ color: c }, true)}
-          />
-        ))}
-        <input type="color" value={l.color} aria-label="Custom colour" onInput={(e) => set({ color: (e.target as HTMLInputElement).value }, false)} onChange={() => set({}, true)} />
-      </Scroller>
-      <Scroller>
-        <button class={'chip' + (l.bold ? ' on' : '')} onClick={() => set({ bold: !l.bold }, true)}>
-          Bold
-        </button>
-        <button class={'chip' + (l.shadow ? ' on' : '')} onClick={() => set({ shadow: !l.shadow }, true)}>
-          Shadow
-        </button>
-        <button class={'chip' + (l.bg ? ' on' : '')} onClick={() => set({ bg: l.bg ? null : l.color === '#000000' ? '#ffffff' : '#000000' }, true)}>
-          Box
-        </button>
-        {(['left', 'center', 'right'] as CanvasTextAlign[]).map((a) => (
-          <button key={a} class={'chip' + (l.align === a ? ' on' : '')} onClick={() => set({ align: a }, true)}>
-            {a[0].toUpperCase() + a.slice(1)}
-          </button>
-        ))}
-      </Scroller>
-    </>
-  );
-}
 
 function TextSheet(props: { layer: TextLayer | undefined; onChange: (p: Partial<TextLayer>, commit: boolean) => void; onClose: () => void }) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -884,9 +1028,13 @@ function TextSheet(props: { layer: TextLayer | undefined; onChange: (p: Partial<
 function MaskPanel(props: {
   doc: Doc;
   selected: string;
-  select: (id: string) => void;
   settings: MaskSettings;
   setSettings: (m: MaskSettings) => void;
+  actions: boolean;
+  setActions: (on: boolean) => void;
+  brushSetting: BrushSetting;
+  setBrushSetting: (b: BrushSetting) => void;
+  previewBrush: () => void;
   change: (d: Doc, c: boolean) => void;
   maskChanged: () => void;
   removeBg: (id: string) => void;
@@ -894,8 +1042,8 @@ function MaskPanel(props: {
   const { doc, settings: ms, setSettings } = props;
   const set = (p: Partial<MaskSettings>) => setSettings({ ...ms, ...p });
   const photoLayers = doc.layers.filter((l): l is ImageLayer => l.kind === 'image');
-  const curMask = props.selected === 'base' ? doc.base.mask : photoLayers.find((l) => l.id === props.selected)?.mask ?? null;
-  const targetSrc = props.selected === 'base' ? doc.base.src : photoLayers.find((l) => l.id === props.selected)?.src ?? null;
+  const curMask = props.selected === 'base' ? doc.base.mask : (photoLayers.find((l) => l.id === props.selected)?.mask ?? null);
+  const targetSrc = props.selected === 'base' ? doc.base.src : (photoLayers.find((l) => l.id === props.selected)?.src ?? null);
   const op = (fn: (m: Mask) => void) => {
     if (!targetSrc) return;
     let m = curMask;
@@ -913,21 +1061,14 @@ function MaskPanel(props: {
     const d = props.selected === 'base' ? { ...doc, base: { ...doc.base, mask: null } } : updateLayer(doc, props.selected, { mask: null });
     props.change(d, true);
   };
+  const brushSettings: { id: BrushSetting; name: string }[] = [
+    { id: 'size', name: 'Size' },
+    { id: 'hardness', name: 'Hardness' },
+    { id: 'flow', name: 'Flow' },
+  ];
   return (
-    <div>
-      <Scroller class="layers">
-        {[...photoLayers].reverse().map((x) => (
-          <button key={x.id} class={'layer-chip' + (x.id === props.selected ? ' on' : '')} onClick={() => props.select(x.id)}>
-            <LayerThumb layer={x} doc={doc} />
-            <span class="ln">{x.name}</span>
-          </button>
-        ))}
-        <button class={'layer-chip' + (props.selected === 'base' ? ' on' : '')} onClick={() => props.select('base')}>
-          <LayerThumb layer={null} doc={doc} />
-          <span class="ln">Background</span>
-        </button>
-      </Scroller>
-      <div class="row">
+    <div class="pane">
+      <Scroller>
         {(
           [
             ['brush', 'Brush', IcBrush],
@@ -936,78 +1077,134 @@ function MaskPanel(props: {
             ['wand', 'Color', IcWand],
           ] as const
         ).map(([id, name, Icon]) => (
-          <button key={id} class={'chip' + (ms.tool === id ? ' on' : '')} onClick={() => set({ tool: id })} aria-label={name}>
-            <Icon style={{ width: 16, height: 16, verticalAlign: '-3px' }} /> {name}
+          <button
+            key={id}
+            class={'chip' + (!props.actions && ms.tool === id ? ' on' : '')}
+            onClick={() => {
+              props.setActions(false);
+              set({ tool: id });
+            }}
+            aria-label={name}
+          >
+            <Icon style={{ width: 16, height: 16 }} /> {name}
           </button>
         ))}
-      </div>
-      {ms.tool !== 'linear' && (
-        <div class="row">
-          <button class={'chip' + (ms.mode === 'hide' ? ' on' : '')} onClick={() => set({ mode: 'hide' })}>
-            {ms.tool === 'wand' ? 'Hide colour' : ms.tool === 'radial' ? 'Hide inside' : 'Hide'}
-          </button>
-          <button class={'chip' + (ms.mode === 'reveal' ? ' on' : '')} onClick={() => set({ mode: 'reveal' })}>
-            {ms.tool === 'wand' ? 'Keep colour' : ms.tool === 'radial' ? 'Keep inside' : 'Reveal'}
-          </button>
-          <span class="spacer" />
-          <button class={'icon-btn' + (ms.show ? ' on' : '')} aria-label="Show mask overlay" onClick={() => set({ show: !ms.show })}>
-            <IcEye />
-          </button>
-        </div>
-      )}
-      {ms.tool === 'brush' && (
+        <button class={'chip' + (props.actions ? ' on' : '')} onClick={() => props.setActions(true)} data-testid="mask-actions">
+          <IcInvert style={{ width: 16, height: 16 }} /> Actions
+        </button>
+      </Scroller>
+
+      {props.actions && (
         <>
-          <Slider name="Size" min={4} max={120} neutral={28} value={ms.size} onInput={(v) => set({ size: v })} onCommit={(v) => set({ size: v })} />
-          <Slider
-            name="Hardness"
-            min={0}
-            max={100}
-            neutral={50}
-            value={Math.round(ms.hardness * 100)}
-            onInput={(v) => set({ hardness: v / 100 })}
-            onCommit={(v) => set({ hardness: v / 100 })}
-          />
-          <Slider name="Flow" min={5} max={100} neutral={90} value={Math.round(ms.flow * 100)} onInput={(v) => set({ flow: v / 100 })} onCommit={(v) => set({ flow: v / 100 })} />
-        </>
-      )}
-      {ms.tool === 'radial' && (
-        <Slider
-          name="Feather"
-          min={0}
-          max={100}
-          neutral={50}
-          value={Math.round(ms.feather * 100)}
-          onInput={(v) => set({ feather: v / 100 })}
-          onCommit={(v) => set({ feather: v / 100 })}
-        />
-      )}
-      {ms.tool === 'wand' && (
-        <>
-          <Slider name="Tolerance" min={1} max={120} neutral={32} value={ms.tolerance} onInput={(v) => set({ tolerance: v })} onCommit={(v) => set({ tolerance: v })} />
           <div class="row">
-            <button class={'chip' + (ms.contiguous ? ' on' : '')} onClick={() => set({ contiguous: !ms.contiguous })}>
-              Connected area only
+            <button class="btn primary" disabled={!targetSrc} onClick={() => props.removeBg(props.selected)}>
+              <IcWand /> Remove background
+            </button>
+            <button class="btn" disabled={!targetSrc} onClick={() => op(invertMask)}>
+              <IcInvert /> Invert
+            </button>
+          </div>
+          <div class="row">
+            <button class="btn" disabled={!targetSrc} onClick={() => op((m) => fillMask(m, true))}>
+              Show all
+            </button>
+            <button class="btn" disabled={!targetSrc} onClick={() => op((m) => fillMask(m, false))}>
+              Hide all
+            </button>
+            <button class="btn danger" disabled={!curMask} onClick={removeMask}>
+              <IcTrash /> Remove
             </button>
           </div>
         </>
       )}
-      <Scroller>
-        <button class="btn primary" disabled={!targetSrc} onClick={() => props.removeBg(props.selected)}>
-          <IcWand /> Remove background
-        </button>
-        <button class="btn" disabled={!targetSrc} onClick={() => op(invertMask)}>
-          <IcInvert /> Invert
-        </button>
-        <button class="btn" disabled={!targetSrc} onClick={() => op((m) => fillMask(m, true))}>
-          Show all
-        </button>
-        <button class="btn" disabled={!targetSrc} onClick={() => op((m) => fillMask(m, false))}>
-          Hide all
-        </button>
-        <button class="btn danger" disabled={!curMask} onClick={removeMask}>
-          <IcTrash /> Remove mask
-        </button>
-      </Scroller>
+
+      {!props.actions && ms.tool === 'brush' && (
+        <>
+          <Scroller>
+            <button class={'chip' + (ms.mode === 'hide' ? ' on' : '')} onClick={() => set({ mode: 'hide' })}>
+              Hide
+            </button>
+            <button class={'chip' + (ms.mode === 'reveal' ? ' on' : '')} onClick={() => set({ mode: 'reveal' })}>
+              Reveal
+            </button>
+            <span class="sep" />
+            {brushSettings.map((b) => (
+              <button key={b.id} class={'chip' + (props.brushSetting === b.id ? ' on' : '')} onClick={() => props.setBrushSetting(b.id)}>
+                {b.name}
+              </button>
+            ))}
+          </Scroller>
+          {props.brushSetting === 'size' && (
+            <Slider
+              name="Size"
+              min={4}
+              max={120}
+              neutral={28}
+              value={ms.size}
+              onInput={(v) => {
+                set({ size: v });
+                props.previewBrush();
+              }}
+              onCommit={(v) => set({ size: v })}
+            />
+          )}
+          {props.brushSetting === 'hardness' && (
+            <Slider
+              name="Hardness"
+              min={0}
+              max={100}
+              neutral={50}
+              value={Math.round(ms.hardness * 100)}
+              onInput={(v) => {
+                set({ hardness: v / 100 });
+                props.previewBrush();
+              }}
+              onCommit={(v) => set({ hardness: v / 100 })}
+            />
+          )}
+          {props.brushSetting === 'flow' && (
+            <Slider name="Flow" min={5} max={100} neutral={90} value={Math.round(ms.flow * 100)} onInput={(v) => set({ flow: v / 100 })} onCommit={(v) => set({ flow: v / 100 })} />
+          )}
+        </>
+      )}
+      {!props.actions && ms.tool === 'linear' && <p class="note muted">Drag across the photo: fully kept where you start, faded out where you stop.</p>}
+      {!props.actions && ms.tool === 'radial' && (
+        <>
+          <div class="row">
+            <button class={'chip' + (ms.mode === 'hide' ? ' on' : '')} onClick={() => set({ mode: 'hide' })}>
+              Hide inside
+            </button>
+            <button class={'chip' + (ms.mode === 'reveal' ? ' on' : '')} onClick={() => set({ mode: 'reveal' })}>
+              Keep inside
+            </button>
+          </div>
+          <Slider
+            name="Feather"
+            min={0}
+            max={100}
+            neutral={50}
+            value={Math.round(ms.feather * 100)}
+            onInput={(v) => set({ feather: v / 100 })}
+            onCommit={(v) => set({ feather: v / 100 })}
+          />
+        </>
+      )}
+      {!props.actions && ms.tool === 'wand' && (
+        <>
+          <Scroller>
+            <button class={'chip' + (ms.mode === 'hide' ? ' on' : '')} onClick={() => set({ mode: 'hide' })}>
+              Hide colour
+            </button>
+            <button class={'chip' + (ms.mode === 'reveal' ? ' on' : '')} onClick={() => set({ mode: 'reveal' })}>
+              Keep colour
+            </button>
+            <button class={'chip' + (ms.contiguous ? ' on' : '')} onClick={() => set({ contiguous: !ms.contiguous })}>
+              Connected only
+            </button>
+          </Scroller>
+          <Slider name="Tolerance" min={1} max={120} neutral={32} value={ms.tolerance} onInput={(v) => set({ tolerance: v })} onCommit={(v) => set({ tolerance: v })} />
+        </>
+      )}
     </div>
   );
 }

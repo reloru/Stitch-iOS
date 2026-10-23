@@ -25,6 +25,12 @@ const CELL_ASPECTS: { name: string; v: number | null }[] = [
 ];
 
 type Tab = 'photos' | 'layout' | 'style';
+type Edge = 'top' | 'bottom' | 'left' | 'right';
+const STYLE_PARAMS: { key: 'gap' | 'padding' | 'radius'; name: string; max: number }[] = [
+  { key: 'gap', name: 'Spacing', max: 120 },
+  { key: 'padding', name: 'Border', max: 160 },
+  { key: 'radius', name: 'Corners', max: 160 },
+];
 
 export async function loadStitchItems(files: File[], onProgress?: (i: number) => void): Promise<StitchItem[]> {
   const out: StitchItem[] = [];
@@ -43,6 +49,8 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
   const [, setTick] = useState(0);
   const [selected, setSelected] = useState(-1);
   const [tab, setTab] = useState<Tab>('photos');
+  const [trimEdge, setTrimEdge] = useState<Edge>('top');
+  const [styleParam, setStyleParam] = useState<'gap' | 'padding' | 'radius'>('gap');
   const [busy, setBusy] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
@@ -247,9 +255,9 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
       </div>
 
       <div class="dock">
-        <div class="panel">
+        <div class="panel stitch-panel">
           {tab === 'photos' && (
-            <div>
+            <div class="pane">
               <div class="strip-list" ref={drag.listRef}>
                 {st.items.map((x, i) => (
                   <button
@@ -278,25 +286,35 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
                   </button>
                 </div>
               )}
-              {!it && <p class="note muted" style={{ fontSize: '12px', margin: '4px 0' }}>Finds the overlap between scrolling screenshots and removes repeated bars.</p>}
+              {!it && <p class="note muted">Finds the overlap between scrolling screenshots and removes repeated bars.</p>}
               {it && (
                 <>
-                  <div class="row">
+                  <Scroller>
                     <button class="icon-btn" aria-label="Move earlier" onClick={() => move(-1)} disabled={sel === 0}>
                       <IcLeft />
                     </button>
                     <button class="icon-btn" aria-label="Move later" onClick={() => move(1)} disabled={sel === st.items.length - 1}>
                       <IcRight />
                     </button>
-                    <span class="label">
-                      Photo {sel + 1}: {it.src.width}×{it.src.height}
-                    </span>
-                    <span class="spacer" />
                     <button class="icon-btn" aria-label="Remove photo" style={{ color: 'var(--danger)' }} onClick={remove}>
                       <IcTrash />
                     </button>
-                  </div>
-                  {(['top', 'bottom', 'left', 'right'] as const).map((edge) => {
+                    <span class="sep" />
+                    {(['top', 'bottom', 'left', 'right'] as const).map((edge) => (
+                      <button
+                        key={edge}
+                        class={'chip' + (trimEdge === edge ? ' on' : '') + (it.trim[edge] > 0 ? ' dot' : '')}
+                        onClick={() => setTrimEdge(edge)}
+                      >
+                        {edge[0].toUpperCase() + edge.slice(1)}
+                      </button>
+                    ))}
+                    <button class="btn" onClick={() => cbRef.current.trim(sel, { ...NO_TRIM }, true)}>
+                      Reset trim
+                    </button>
+                  </Scroller>
+                  {(() => {
+                    const edge = trimEdge;
                     const max = edge === 'top' || edge === 'bottom' ? it.src.height : it.src.width;
                     const set = (v: number, commit: boolean) => cbRef.current.trim(sel, clampTrimFor(it, { ...it.trim, [edge]: v }), commit);
                     return (
@@ -311,19 +329,14 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
                         onCommit={(v) => set(v, true)}
                       />
                     );
-                  })}
-                  <div class="row">
-                    <button class="btn" onClick={() => cbRef.current.trim(sel, { ...NO_TRIM }, true)}>
-                      Reset trim
-                    </button>
-                  </div>
+                  })()}
                 </>
               )}
             </div>
           )}
           {tab === 'layout' && (
-            <div>
-              <div class="row">
+            <div class="pane">
+              <Scroller>
                 {(
                   [
                     ['vertical', 'Vertical', IcRows],
@@ -332,10 +345,10 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
                   ] as const
                 ).map(([id, name, Icon]) => (
                   <button key={id} class={'chip' + (S.layout === id ? ' on' : '')} onClick={() => setSettings({ layout: id })}>
-                    <Icon style={{ width: 16, height: 16, verticalAlign: '-3px' }} /> {name}
+                    <Icon style={{ width: 16, height: 16 }} /> {name}
                   </button>
                 ))}
-              </div>
+              </Scroller>
               {S.layout === 'grid' && (
                 <>
                   <Slider name="Columns" min={1} max={6} neutral={2} value={S.columns} onInput={(v) => setSettings({ columns: v }, false)} onCommit={(v) => setSettings({ columns: v })} />
@@ -352,10 +365,28 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
             </div>
           )}
           {tab === 'style' && (
-            <div>
-              <Slider name="Spacing" min={0} max={120} value={S.gap} onInput={(v) => setSettings({ gap: v }, false)} onCommit={(v) => setSettings({ gap: v })} />
-              <Slider name="Border" min={0} max={160} value={S.padding} onInput={(v) => setSettings({ padding: v }, false)} onCommit={(v) => setSettings({ padding: v })} />
-              <Slider name="Corners" min={0} max={160} value={S.radius} onInput={(v) => setSettings({ radius: v }, false)} onCommit={(v) => setSettings({ radius: v })} />
+            <div class="pane">
+              <Scroller>
+                {STYLE_PARAMS.map((p) => (
+                  <button key={p.key} class={'chip' + (styleParam === p.key ? ' on' : '') + (S[p.key] > 0 ? ' dot' : '')} onClick={() => setStyleParam(p.key)}>
+                    {p.name}
+                  </button>
+                ))}
+              </Scroller>
+              {(() => {
+                const p = STYLE_PARAMS.find((x) => x.key === styleParam)!;
+                return (
+                  <Slider
+                    key={p.key}
+                    name={p.name}
+                    min={0}
+                    max={p.max}
+                    value={S[p.key]}
+                    onInput={(v) => setSettings({ [p.key]: v }, false)}
+                    onCommit={(v) => setSettings({ [p.key]: v })}
+                  />
+                );
+              })()}
               <Scroller>
                 {BG.map((c) => (
                   <button key={c} aria-label={`Background ${c}`} class={'icon-btn' + (S.background === c ? ' on' : '')} style={{ background: c }} onClick={() => setSettings({ background: c })} />

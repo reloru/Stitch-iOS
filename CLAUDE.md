@@ -51,9 +51,13 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
 - `src/stitch/` — same split for the stitcher.
 - `worker/` — `handler.ts` is pure (bindings injected, unit-tested in Node); `index.ts` wires `env.IMAGES` and
   `env.REMOVE_BG_LIMIT`. E2E tests never call the real API: they intercept `/api/remove-bg` with `page.route`.
-- ✓ Apply = `flattenDoc` (full-res render → new single-photo doc); applied docs are recorded as checkpoints and
-  ✗ Discard undoes back to the latest one. Opaque applies are stored as JPEG 0.97 (`sourceFromCanvas(…, alpha)`)
-  to bound memory, since every applied photo stays referenced by undo history.
+- ✓/✗ under the picture are per tool session: the session starts at `History.position` when a tool is opened (or at
+  the last ✓/✗); ✗ undoes back to it, ✓ moves it to now. Nothing is baked in. Merge / Flatten = `flattenDoc`
+  (full-res render → new single-photo doc), stored as PNG so it adds no lossy generation. Photos no longer reachable
+  from `History.docs()` or the current doc are disposed (the Editor effect after each render).
+- Tool panel: fixed height (`--panel-h`, three 44 pt rows) so the picture never resizes between tools; panels show
+  one slider at a time with chips choosing what it controls. An e2e test asserts the stage height is constant.
+- Adjust/Filters/Mask edit one layer, chosen with the layer chip under the picture (shown when there are photo layers).
 - Overlay photos: `ImageLayer.crop` is in source px; always map layer pixels with `imageLayerMat(l)` (crop-aware),
   and change crops via `setLayerCrop` so the visible pixels stay put. Masks stay in full source px.
 
