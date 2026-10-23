@@ -72,7 +72,7 @@ export function ExportSheetBase(props: { spec: ExportSpec; onClose: () => void; 
 
   if (result && url) {
     return (
-      <Sheet title="Ready" onClose={props.onClose}>
+      <Sheet title="Ready" onClose={props.onClose} keep>
         <img class="preview-img" src={url} alt="Exported image" data-testid="export-preview" />
         <p class="note" data-testid="export-info">
           {result.width} × {result.height} · {result.blob.type === 'image/png' ? 'PNG' : 'JPEG'} · {mb(result.blob.size)}

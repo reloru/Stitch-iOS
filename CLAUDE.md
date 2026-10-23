@@ -35,6 +35,10 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
 - Top edge: iOS 26+ blurs the top of home-screen web apps (Liquid Glass scroll edge effect) unless a fixed, full-width,
   opaque box covers it. Keep `.topbar` `position: fixed` + opaque (with `.topbar-space` in flow) and `.status-cap` on screens
   without a top bar; an e2e test guards this.
+- Touch: double-tap always means zoom and never edits. In Mask, a single brush dab or colour pick waits out the
+  double-tap window (350 ms) before it is committed (`EditorView.flush/settle`). Controls are ≥ 44 pt (an e2e test
+  checks). Hints use `useHint` (hidden after the first touch). Sheets that hold work pass `keep` (no backdrop
+  dismiss). Open text fields from a tap via `raiseKeyboard()` so iOS shows the keyboard; `--kb` keeps sheets above it.
 - Icons: edit `public/icons/icon.svg`, then `npm run icons` to regenerate the PNGs.
 
 ## Layout
