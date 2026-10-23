@@ -16,11 +16,12 @@ interface CacheEntry {
 export class RasterCache {
   private map = new Map<string, CacheEntry>();
 
-  get(slot: string, key: string, make: () => HTMLCanvasElement): HTMLCanvasElement {
+  /** `make` may return the previous canvas of the slot (passed as `reuse`) after redrawing it. */
+  get(slot: string, key: string, make: (reuse: HTMLCanvasElement | null) => HTMLCanvasElement): HTMLCanvasElement {
     const e = this.map.get(slot);
     if (e && e.key === key) return e.canvas;
-    if (e) releaseCanvas(e.canvas);
-    const canvas = make();
+    const canvas = make(e ? e.canvas : null);
+    if (e && e.canvas !== canvas) releaseCanvas(e.canvas);
     this.map.set(slot, { key, canvas });
     return canvas;
   }
@@ -91,12 +92,16 @@ export function imageRaster(
 
   if (!mask) return { canvas: adjusted, k, temp };
 
-  const makeMasked = () => {
-    const c = createCanvas(adjusted.width, adjusted.height);
+  // While a mask is being painted this runs every frame: redraw into the previous canvas instead of allocating one.
+  const makeMasked = (reuse: HTMLCanvasElement | null = null) => {
+    const c = reuse && reuse.width === adjusted.width && reuse.height === adjusted.height ? reuse : createCanvas(adjusted.width, adjusted.height);
     const ctx = ctx2d(c);
+    ctx.save();
+    ctx.globalCompositeOperation = 'copy';
     ctx.drawImage(adjusted, 0, 0);
     ctx.globalCompositeOperation = 'destination-in';
     ctx.drawImage(mask.canvas, 0, 0, c.width, c.height);
+    ctx.restore();
     return c;
   };
   let masked: HTMLCanvasElement;

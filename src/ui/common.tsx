@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { IcClose } from './icons';
 
 export function Slider(props: {
   name: string;
@@ -7,7 +8,7 @@ export function Slider(props: {
   min: number;
   max: number;
   step?: number;
-  /** value shown when unchanged; double-tap the name to reset to it */
+  /** value shown when unchanged; tapping the value resets to it */
   neutral?: number;
   format?: (v: number) => string;
   onInput: (v: number) => void;
@@ -17,17 +18,7 @@ export function Slider(props: {
   const changed = props.value !== neutral;
   return (
     <div class="slider">
-      <button
-        class="name"
-        style={{ textAlign: 'left' }}
-        onDblClick={() => {
-          props.onInput(neutral);
-          props.onCommit(neutral);
-        }}
-        aria-label={`${props.name} (double-tap to reset)`}
-      >
-        {props.name}
-      </button>
+      <span class="name">{props.name}</span>
       <input
         type="range"
         min={props.min}
@@ -38,26 +29,125 @@ export function Slider(props: {
         onInput={(e) => props.onInput(Number((e.target as HTMLInputElement).value))}
         onChange={(e) => props.onCommit(Number((e.target as HTMLInputElement).value))}
       />
-      <span class={'val' + (changed ? ' changed' : '')}>{props.format ? props.format(props.value) : Math.round(props.value)}</span>
+      <button
+        class={'val' + (changed ? ' changed' : '')}
+        aria-label={`Reset ${props.name}`}
+        onClick={() => {
+          if (!changed) return;
+          props.onInput(neutral);
+          props.onCommit(neutral);
+        }}
+      >
+        {props.format ? props.format(props.value) : Math.round(props.value)}
+      </button>
     </div>
   );
 }
 
-export function Sheet(props: { onClose: () => void; children: ComponentChildren; title?: string }) {
+/**
+ * Bottom sheet. Sheets that hold work (`keep`) ignore taps outside them and show a close button instead, so a stray
+ * tap above the sheet cannot throw the work away. `clear` leaves the picture undimmed (live preview while typing).
+ */
+export function Sheet(props: { onClose: () => void; children: ComponentChildren; title?: string; keep?: boolean; clear?: boolean }) {
   return (
     <div
-      class="sheet-backdrop"
+      class={'sheet-backdrop' + (props.clear ? ' clear' : '')}
       onClick={(e) => {
-        if (e.target === e.currentTarget) props.onClose();
+        if (!props.keep && e.target === e.currentTarget) props.onClose();
       }}
     >
       <div class="sheet" role="dialog" aria-label={props.title}>
         <div class="grab" />
-        {props.title && <h3>{props.title}</h3>}
+        {(props.title || props.keep) && (
+          <div class="sheet-head">
+            {props.title && <h3>{props.title}</h3>}
+            {props.keep && (
+              <button class="tb-btn" aria-label="Close" onClick={props.onClose}>
+                <IcClose />
+              </button>
+            )}
+          </div>
+        )}
         {props.children}
       </div>
     </div>
   );
+}
+
+/**
+ * A one-line hint over the picture that gets out of the way: hidden after the first touch on the picture or after a
+ * few seconds, and shown again only when its text changes.
+ */
+export function useHint(text: string | null, ms = 5000) {
+  const [gone, setGone] = useState<string | null>(null);
+  useEffect(() => {
+    if (!text) return;
+    const t = window.setTimeout(() => setGone(text), ms);
+    return () => clearTimeout(t);
+  }, [text]);
+  return { visible: !!text && gone !== text, dismiss: () => text && setGone(text) };
+}
+
+/** Horizontally scrolling row that fades the edge(s) with more content, so off-screen buttons are discoverable. */
+export function Scroller(props: { class?: string; children: ComponentChildren; testId?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [fade, setFade] = useState('');
+  useLayoutEffect(() => {
+    const el = ref.current!;
+    const update = () => {
+      const l = el.scrollLeft > 2;
+      const r = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+      setFade(l && r ? ' fade-lr' : l ? ' fade-l' : r ? ' fade-r' : '');
+    };
+    update();
+    el.addEventListener('scroll', update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    for (const c of Array.from(el.children)) ro.observe(c);
+    return () => {
+      el.removeEventListener('scroll', update);
+      ro.disconnect();
+    };
+  });
+  return (
+    <div ref={ref} class={(props.class ?? 'row scroll') + fade} data-testid={props.testId}>
+      {props.children}
+    </div>
+  );
+}
+
+/**
+ * Keeps `--kb` (CSS px hidden by the on-screen keyboard) up to date. iOS overlays the keyboard on the layout viewport,
+ * so fixed bottom sheets use it to stay above the keyboard.
+ */
+export function trackKeyboard() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const update = () => {
+    const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+    document.documentElement.style.setProperty('--kb', `${kb}px`);
+  };
+  vv.addEventListener('resize', update);
+  vv.addEventListener('scroll', update);
+  update();
+}
+
+let kbdProxy: HTMLInputElement | null = null;
+
+/**
+ * iOS shows the keyboard only for a focus() made while handling the tap itself. Call this synchronously in the tap
+ * handler that opens a text field; the field then takes the focus over from this proxy when it mounts.
+ */
+export function raiseKeyboard() {
+  if (!kbdProxy) {
+    kbdProxy = document.createElement('input');
+    kbdProxy.type = 'text';
+    kbdProxy.className = 'kbd-proxy';
+    kbdProxy.setAttribute('aria-hidden', 'true');
+    kbdProxy.tabIndex = -1;
+    document.body.appendChild(kbdProxy);
+  }
+  kbdProxy.focus({ preventScroll: true });
 }
 
 let toastSetter: ((s: string | null) => void) | null = null;

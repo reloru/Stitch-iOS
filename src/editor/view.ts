@@ -81,6 +81,10 @@ export interface ViewCallbacks {
   revert(): void;
   editText(id: string): void;
   notify(msg: string): void;
+  /** show (text) or hide (null) the blocking busy overlay */
+  busy(text: string | null): void;
+  /** the user touched the picture (used to dismiss hints) */
+  touched(): void;
 }
 
 type Gesture =
@@ -98,6 +102,23 @@ type Gesture =
 
 const CSS_MARGIN = 16;
 const CROP_MARGIN = 34;
+/** a second tap within this time (ms) and distance (CSS px) of the first is a double-tap */
+const DOUBLE_TAP_MS = 350;
+const DOUBLE_TAP_PX = 30;
+
+const frame = () => new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+/** Fields of a document that the uncropped (crop-mode) preview depends on: not the crop box or straighten angle. */
+function sameWorldRender(a: Doc, b: Doc): boolean {
+  return (
+    a.base === b.base &&
+    a.layers === b.layers &&
+    a.background === b.background &&
+    a.geo.orient === b.geo.orient &&
+    a.geo.worldW === b.geo.worldW &&
+    a.geo.worldH === b.geo.worldH
+  );
+}
 
 export class EditorView {
   readonly canvas: HTMLCanvasElement;
@@ -130,6 +151,10 @@ export class EditorView {
   private pointers = new Map<number, Pt>();
   private gesture: Gesture = { kind: 'none' };
   private lastTap = { t: 0, x: 0, y: 0 };
+  /** a single brush dab or colour pick waiting to see whether a second tap makes it a double-tap */
+  private pendingTap: { kind: 'dab' | 'wand'; p: Pt; timer: number } | null = null;
+  /** the current finger went down as a possible second tap: its gesture starts only once it moves */
+  private deferredDown = false;
   private downAt = { t: 0, x: 0, y: 0 };
   private cursor: Pt | null = null;
   private raf = 0;
@@ -155,6 +180,8 @@ export class EditorView {
   }
 
   destroy() {
+    if (this.pendingTap) clearTimeout(this.pendingTap.timer);
+    this.pendingTap = null;
     this.ro.disconnect();
     cancelAnimationFrame(this.raf);
     this.cache.clear();
@@ -165,6 +192,7 @@ export class EditorView {
 
   update(state: ViewState) {
     const prev = this.state;
+    if (prev.tool !== state.tool || prev.mask.tool !== state.mask.tool || prev.selected !== state.selected) this.settle();
     this.state = state;
     if (prev.tool !== state.tool) {
       this.gesture = { kind: 'none' };
@@ -277,8 +305,8 @@ export class EditorView {
     const compare = this.state.compare && (this.state.tool === 'adjust' || this.state.tool === 'filters');
     const ps = this.previewScale(world);
     const f = this.compositeFor;
-    if (this.composite && f.doc === this.state.doc && f.world === world && f.compare === compare && f.ps === ps && f.tick === this.maskTick)
-      return;
+    const sameDoc = f.doc === this.state.doc || (world && f.doc !== null && sameWorldRender(f.doc, this.state.doc));
+    if (this.composite && sameDoc && f.world === world && f.compare === compare && f.ps === ps && f.tick === this.maskTick) return;
     let doc = this.state.doc;
     if (compare) doc = { ...doc, base: { ...doc.base, adjust: ADJUST_DEFAULTS, look: LOOK_DEFAULT }, vignette: 0 };
     const opts = { scale: ps, mode: 'preview' as const, world, cache: this.cache };
@@ -434,13 +462,20 @@ export class EditorView {
       const m = t.mask;
       const key = `${m.id}:${m.version}`;
       if (!this.tint || this.tint.key !== key) {
-        if (this.tint) releaseCanvas(this.tint.canvas);
-        const c = createCanvas(m.canvas.width, m.canvas.height);
+        // reuse the tint canvas while painting: a new 2048² canvas per frame is too much for iOS
+        let c = this.tint?.canvas ?? null;
+        if (!c || c.width !== m.canvas.width || c.height !== m.canvas.height) {
+          releaseCanvas(c);
+          c = createCanvas(m.canvas.width, m.canvas.height);
+        }
         const x = ctx2d(c);
+        x.save();
+        x.globalCompositeOperation = 'copy';
         x.fillStyle = 'rgb(255,40,90)';
         x.fillRect(0, 0, c.width, c.height);
         x.globalCompositeOperation = 'destination-out';
         x.drawImage(m.canvas, 0, 0);
+        x.restore();
         this.tint = { key, canvas: c };
       }
       this.setT(chain(this.screenFromWorld(), t.wfs, scale(1 / m.scale)));
@@ -528,17 +563,70 @@ export class EditorView {
 
   private onDown = (e: PointerEvent) => {
     this.canvas.setPointerCapture(e.pointerId);
+    this.cb.touched();
     const p = this.pt(e);
     this.pointers.set(e.pointerId, p);
     if (this.pointers.size === 1) {
-      this.downAt = { t: performance.now(), x: p.x, y: p.y };
+      const now = performance.now();
+      this.downAt = { t: now, x: p.x, y: p.y };
+      // the second tap of a possible double-tap must not paint: wait to see whether it moves
+      this.deferredDown = false;
+      if (this.pendingTap && this.isSecondTap(p, now)) {
+        this.gesture = { kind: 'none' };
+        this.deferredDown = true;
+        this.schedule();
+        return;
+      }
+      this.flush();
       this.startOne(p);
     } else if (this.pointers.size === 2) {
+      this.deferredDown = false;
+      this.flush();
       this.abortOne();
       this.startTwo();
     }
     this.schedule();
   };
+
+  private isSecondTap(p: Pt, now: number) {
+    return now - this.lastTap.t < DOUBLE_TAP_MS && Math.hypot(p.x - this.lastTap.x, p.y - this.lastTap.y) < DOUBLE_TAP_PX * this.dpr;
+  }
+
+  /** Commits a waiting single-tap edit now (its double-tap window is over or something else started). */
+  flush() {
+    const t = this.pendingTap;
+    if (!t) return;
+    clearTimeout(t.timer);
+    this.pendingTap = null;
+    if (t.kind === 'dab') this.cb.change(this.state.doc, true);
+    else void this.wandAt(t.p);
+  }
+
+  /**
+   * Before history moves or the tool/target changes: a waiting dab is kept (it is already on screen), a waiting
+   * colour pick is dropped (it has not happened yet and its target may be about to change).
+   */
+  settle() {
+    if (this.pendingTap?.kind === 'dab') this.flush();
+    else if (this.pendingTap) this.cancelTap();
+  }
+
+  /** Drops a waiting single-tap edit (it was the first half of a double-tap). */
+  private cancelTap() {
+    const t = this.pendingTap;
+    if (!t) return;
+    clearTimeout(t.timer);
+    this.pendingTap = null;
+    if (t.kind === 'dab') {
+      this.cb.revert();
+      this.maskChanged();
+    }
+  }
+
+  private holdTap(kind: 'dab' | 'wand', p: Pt) {
+    const timer = window.setTimeout(() => this.flush(), DOUBLE_TAP_MS);
+    this.pendingTap = { kind, p, timer };
+  }
 
   private onMove = (e: PointerEvent) => {
     if (!this.pointers.has(e.pointerId)) {
@@ -550,6 +638,13 @@ export class EditorView {
     }
     const p = this.pt(e);
     this.pointers.set(e.pointerId, p);
+    if (this.pointers.size === 1 && this.deferredDown) {
+      if (Math.hypot(p.x - this.downAt.x, p.y - this.downAt.y) < 12 * this.dpr) return;
+      // not a double-tap after all: keep the first tap's edit and start what this finger is doing
+      this.deferredDown = false;
+      this.flush();
+      this.startOne({ x: this.downAt.x, y: this.downAt.y });
+    }
     if (this.pointers.size === 1) this.moveOne(p);
     else if (this.pointers.size === 2) this.moveTwo();
     this.schedule();
@@ -561,15 +656,28 @@ export class EditorView {
     const wasOne = this.pointers.size === 1;
     this.pointers.delete(e.pointerId);
     if (wasOne) {
-      this.endOne(p);
       const now = performance.now();
       const isTap = now - this.downAt.t < 300 && Math.hypot(p.x - this.downAt.x, p.y - this.downAt.y) < 12 * this.dpr;
-      if (isTap) {
-        this.handleTap(p);
-        if (now - this.lastTap.t < 350 && Math.hypot(p.x - this.lastTap.x, p.y - this.lastTap.y) < 30 * this.dpr) {
-          this.doubleTap(p);
-          this.lastTap.t = 0;
-        } else this.lastTap = { t: now, x: p.x, y: p.y };
+      const second = isTap && this.isSecondTap(p, now);
+      this.deferredDown = false;
+      if (second) {
+        // double-tap: zoom only; undo whatever the first tap started
+        this.endOne(p);
+        this.cancelTap();
+        this.doubleTap(p);
+        this.lastTap.t = 0;
+      } else {
+        const g = this.gesture;
+        if (isTap && g.kind === 'mask-brush') {
+          // a single dab: shown now, committed once the double-tap window has passed
+          this.gesture = { kind: 'none' };
+          this.holdTap('dab', p);
+        } else {
+          this.flush();
+          this.endOne(p);
+          if (isTap && this.state.tool === 'mask' && this.state.mask.tool === 'wand') this.holdTap('wand', p);
+        }
+        if (isTap) this.lastTap = { t: now, x: p.x, y: p.y };
       }
     } else if (this.pointers.size === 1) {
       // continue as a fresh one-finger gesture that only pans (avoid accidental strokes after a pinch)
@@ -587,6 +695,8 @@ export class EditorView {
 
   private onCancel = (e: PointerEvent) => {
     this.pointers.delete(e.pointerId);
+    this.deferredDown = false;
+    this.flush();
     this.abortOne();
     this.gesture = { kind: 'none' };
     this.cropFrozen = null;
@@ -980,12 +1090,24 @@ export class EditorView {
   }
 
   /** Magic-wand selection at a screen point (called on tap in wand mode). */
-  wandAt(p: Pt) {
-    const t0 = this.maskTarget();
-    if (!t0) {
+  async wandAt(p: Pt) {
+    if (!this.maskTarget()) {
       this.cb.notify('Masks work on photos. Select the base photo or a photo layer.');
       return;
     }
+    // the selection runs on the main thread: show the busy overlay first so the tap visibly registers
+    this.cb.busy('Selecting colour…');
+    try {
+      await frame();
+      this.wandNow(p);
+    } finally {
+      this.cb.busy(null);
+    }
+  }
+
+  private wandNow(p: Pt) {
+    const t0 = this.maskTarget();
+    if (!t0) return;
     const t = this.ensureMask();
     if (!t) return;
     const doc = this.state.doc;
@@ -1018,8 +1140,4 @@ export class EditorView {
     this.cb.change(this.state.doc, true);
   }
 
-  /** Expose tap handling for the wand (pointerup with no movement). */
-  handleTap(p: Pt) {
-    if (this.state.tool === 'mask' && this.state.mask.tool === 'wand') this.wandAt(p);
-  }
 }

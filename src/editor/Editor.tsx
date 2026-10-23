@@ -28,7 +28,7 @@ import { renderAdjusted } from '../core/gl';
 import { History } from '../core/history';
 import { cloneMask, createMask, fillMask, invertMask, readAlpha, touch, writeAlpha, type Mask } from '../core/mask';
 import { disposeSource, loadSource, uid, type SourceImage } from '../core/source';
-import { Busy, Sheet, Slider, toast, usePicker } from '../ui/common';
+import { Busy, raiseKeyboard, Scroller, Sheet, Slider, toast, useHint, usePicker } from '../ui/common';
 import { ExportSheet } from '../ui/ExportSheet';
 import { removeBackground } from '../core/removebg';
 import { flattenDoc } from '../core/export';
@@ -147,12 +147,18 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
     setTick((t) => t + 1);
   };
 
+  const openText = (id: string) => {
+    raiseKeyboard();
+    setEditingText(id);
+  };
   const cbRef = useRef({
     change,
     select: (id: string) => setSelected(id),
     revert: () => restore(hist.revert()),
-    editText: (id: string) => setEditingText(id),
+    editText: openText,
     notify: (m: string) => toast(m),
+    busy: (t: string | null) => setBusy(t),
+    touched: () => {},
   });
   cbRef.current.change = change;
 
@@ -163,6 +169,8 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
       revert: () => cbRef.current.revert(),
       editText: (id: string) => cbRef.current.editText(id),
       notify: (m: string) => cbRef.current.notify(m),
+      busy: (t: string | null) => cbRef.current.busy(t),
+      touched: () => cbRef.current.touched(),
     };
     const v = new EditorView(hostRef.current!, { doc, tool, selected: sel, mask, aspect, compare }, cb);
     viewRef.current = v;
@@ -207,6 +215,10 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
     }
     return null;
   })();
+  const hintState = useHint(hint);
+  cbRef.current.touched = hintState.dismiss;
+  /** commits a single brush dab still waiting out its double-tap window before history moves */
+  const flush = () => viewRef.current?.settle();
 
   const changed = hist.canUndo;
   const dirty = !checkpoints.current.has(doc);
@@ -236,7 +248,8 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
    * The previous state stays in history, so Undo still steps back through it.
    */
   const apply = async (opts: { toAdjust?: boolean } = {}) => {
-    if (!dirty) return;
+    flush();
+    if (checkpoints.current.has(docRef.current)) return;
     setBusy(docRef.current.layers.length ? 'Merging into one photo…' : 'Applying…');
     try {
       const r = await flattenDoc(docRef.current);
@@ -262,6 +275,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
 
   /** ✗ Discard: steps back through history to the last applied state (or the photo as opened). */
   const discard = () => {
+    flush();
     let d: Doc | null = hist.current;
     while (!checkpoints.current.has(hist.current) && hist.canUndo) d = hist.undo();
     restore(d ?? hist.current);
@@ -297,13 +311,19 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
 
       <div class="topbar-space" />
       <div class="stage" ref={hostRef}>
-        {hint && <div class="hint">{hint}</div>}
+        {hint && <div class={'hint' + (hintState.visible ? '' : ' gone')}>{hint}</div>}
       </div>
       <div class="editbar">
-        <button class="tb-btn" aria-label="Undo" disabled={!hist.canUndo} onClick={() => restore(hist.undo())}>
+        <button class="tb-btn" aria-label="Undo" disabled={!hist.canUndo} onClick={() => {
+            flush();
+            restore(hist.undo());
+          }}>
           <IcUndo />
         </button>
-        <button class="tb-btn" aria-label="Redo" disabled={!hist.canRedo} onClick={() => restore(hist.redo())}>
+        <button class="tb-btn" aria-label="Redo" disabled={!hist.canRedo} onClick={() => {
+            flush();
+            restore(hist.redo());
+          }}>
           <IcRedo />
         </button>
         <span class="spacer" />
@@ -341,12 +361,13 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
               change={change}
               addPhoto={addPhoto.open}
               addText={() => {
+                raiseKeyboard();
                 const t = newTextLayer(docRef.current);
                 change({ ...docRef.current, layers: [...docRef.current.layers, t] }, true);
                 setSelected(t.id);
                 setEditingText(t.id);
               }}
-              editText={setEditingText}
+              editText={openText}
               removeBg={requestRemoveBg}
               crop={setCropping}
               merge={merge}
@@ -600,7 +621,7 @@ function CropPanel(props: {
         onInput={(v) => change(setAngle(doc, v), false)}
         onCommit={(v) => change(setAngle(doc, v), true)}
       />
-      <div class="row scroll">
+      <Scroller>
         {ASPECTS.map((a) => {
           const v = a.v === 'orig' ? origAspect : a.v;
           const on = a.v === null ? props.aspect === null : props.aspect !== null && v !== null && Math.abs(props.aspect - v) < 1e-6;
@@ -617,7 +638,7 @@ function CropPanel(props: {
             </button>
           );
         })}
-      </div>
+      </Scroller>
       <div class="row">
         <button class="icon-btn" aria-label="Rotate left" onClick={() => change(rotateCCW(doc), true)}>
           <IcRotate style={{ transform: 'scaleX(-1)' }} />
@@ -674,7 +695,7 @@ function LayersPanel(props: {
   const set = (patch: Partial<ImageLayer> | Partial<TextLayer>, commit: boolean) => change(updateLayer(doc, selected, patch), commit);
   return (
     <div>
-      <div class="layers">
+      <Scroller class="layers">
         <button class="btn primary" onClick={props.addPhoto} data-testid="add-photo-layer">
           <IcPhoto /> Photo
         </button>
@@ -696,7 +717,7 @@ function LayersPanel(props: {
           <LayerThumb layer={null} doc={doc} />
           <span class="ln">Background</span>
         </button>
-      </div>
+      </Scroller>
 
       {!l && (
         <div class="row wrap">
@@ -734,13 +755,13 @@ function LayersPanel(props: {
             onInput={(v) => set({ opacity: v / 100 }, false)}
             onCommit={(v) => set({ opacity: v / 100 }, true)}
           />
-          <div class="row scroll">
+          <Scroller>
             {BLEND_MODES.map((b) => (
               <button key={b.id} class={'chip' + (l.blend === b.id ? ' on' : '')} onClick={() => set({ blend: b.id }, true)}>
                 {b.name}
               </button>
             ))}
-          </div>
+          </Scroller>
           {l.kind === 'text' && <TextStyleRow layer={l} set={set} edit={() => props.editText(l.id)} />}
           <div class="row">
             <button class="icon-btn" aria-label="Bring forward" onClick={() => change(moveLayer(doc, l.id, 1), true)}>
@@ -793,7 +814,7 @@ function TextStyleRow(props: { layer: TextLayer; set: (p: Partial<TextLayer>, c:
   const { layer: l, set } = props;
   return (
     <>
-      <div class="row scroll">
+      <Scroller>
         <button class="btn" onClick={props.edit}>
           <IcText /> Edit text
         </button>
@@ -802,8 +823,8 @@ function TextStyleRow(props: { layer: TextLayer; set: (p: Partial<TextLayer>, c:
             {f.name}
           </button>
         ))}
-      </div>
-      <div class="row scroll">
+      </Scroller>
+      <Scroller>
         {SWATCHES.map((c) => (
           <button
             key={c}
@@ -814,8 +835,8 @@ function TextStyleRow(props: { layer: TextLayer; set: (p: Partial<TextLayer>, c:
           />
         ))}
         <input type="color" value={l.color} aria-label="Custom colour" onInput={(e) => set({ color: (e.target as HTMLInputElement).value }, false)} onChange={() => set({}, true)} />
-      </div>
-      <div class="row scroll">
+      </Scroller>
+      <Scroller>
         <button class={'chip' + (l.bold ? ' on' : '')} onClick={() => set({ bold: !l.bold }, true)}>
           Bold
         </button>
@@ -830,7 +851,7 @@ function TextStyleRow(props: { layer: TextLayer; set: (p: Partial<TextLayer>, c:
             {a[0].toUpperCase() + a.slice(1)}
           </button>
         ))}
-      </div>
+      </Scroller>
     </>
   );
 }
@@ -843,7 +864,7 @@ function TextSheet(props: { layer: TextLayer | undefined; onChange: (p: Partial<
   }, []);
   if (!props.layer) return null;
   return (
-    <Sheet title="Text" onClose={props.onClose}>
+    <Sheet title="Text" onClose={props.onClose} clear>
       <textarea
         ref={ref}
         rows={3}
@@ -894,7 +915,7 @@ function MaskPanel(props: {
   };
   return (
     <div>
-      <div class="layers">
+      <Scroller class="layers">
         {[...photoLayers].reverse().map((x) => (
           <button key={x.id} class={'layer-chip' + (x.id === props.selected ? ' on' : '')} onClick={() => props.select(x.id)}>
             <LayerThumb layer={x} doc={doc} />
@@ -905,7 +926,7 @@ function MaskPanel(props: {
           <LayerThumb layer={null} doc={doc} />
           <span class="ln">Background</span>
         </button>
-      </div>
+      </Scroller>
       <div class="row">
         {(
           [
@@ -970,7 +991,7 @@ function MaskPanel(props: {
           </div>
         </>
       )}
-      <div class="row scroll">
+      <Scroller>
         <button class="btn primary" disabled={!targetSrc} onClick={() => props.removeBg(props.selected)}>
           <IcWand /> Remove background
         </button>
@@ -986,7 +1007,7 @@ function MaskPanel(props: {
         <button class="btn danger" disabled={!curMask} onClick={removeMask}>
           <IcTrash /> Remove mask
         </button>
-      </div>
+      </Scroller>
     </div>
   );
 }

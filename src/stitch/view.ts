@@ -18,6 +18,8 @@ export interface StitchViewState {
 export interface StitchViewCallbacks {
   select(i: number): void;
   trim(i: number, t: Trim, commit: boolean): void;
+  /** the user touched the picture (used to dismiss hints) */
+  touched(): void;
 }
 
 type Edge = 'top' | 'bottom' | 'left' | 'right';
@@ -66,7 +68,7 @@ export class StitchView {
     c.addEventListener('pointerdown', this.onDown);
     c.addEventListener('pointermove', this.onMove);
     c.addEventListener('pointerup', this.onUp);
-    c.addEventListener('pointercancel', this.onUp);
+    c.addEventListener('pointercancel', this.onCancel);
     c.addEventListener('wheel', this.onWheel, { passive: false });
     this.relayout(true);
     this.resize();
@@ -237,6 +239,7 @@ export class StitchView {
 
   private onDown = (e: PointerEvent) => {
     this.canvas.setPointerCapture(e.pointerId);
+    this.cb.touched();
     const p = this.pt(e);
     this.pointers.set(e.pointerId, p);
     if (this.pointers.size === 2) {
@@ -300,6 +303,15 @@ export class StitchView {
       if (g.edge === 'right') t.right -= dx;
       this.cb.trim(g.index, clampTrim(t, it.src.width, it.src.height), false);
     }
+    this.schedule();
+  };
+
+  /** The system took the touch (e.g. an edge swipe): put a half-dragged trim back and never treat it as a tap. */
+  private onCancel = (e: PointerEvent) => {
+    this.pointers.delete(e.pointerId);
+    const g = this.gesture;
+    if (g.kind === 'trim') this.cb.trim(g.index, g.trim, false);
+    this.gesture = { kind: 'none' };
     this.schedule();
   };
 

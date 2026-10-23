@@ -5,7 +5,7 @@ import { exportStitch, planStitchExport, renderStitchForEditor } from '../core/e
 import { History } from '../core/history';
 import { decodeFull, disposeSource, loadSource, sourceFromCanvas, uid, type SourceImage } from '../core/source';
 import { NO_TRIM, STITCH_DEFAULTS, type StitchSettings, type Trim } from '../core/stitch';
-import { Busy, nextFrame, Sheet, Slider, toast, usePicker } from '../ui/common';
+import { Busy, nextFrame, Scroller, Sheet, Slider, toast, useHint, usePicker } from '../ui/common';
 import { ExportSheetBase, type ExportSpec } from '../ui/ExportSheet';
 import { IcAuto, IcBack, IcCols, IcEdit, IcGrid, IcLeft, IcPlus, IcRedo, IcRight, IcRows, IcShare, IcTrash, IcUndo } from '../ui/icons';
 import { itemDims, StitchView, type StitchItem } from './view';
@@ -66,6 +66,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
   };
 
   const cbRef = useRef({
+    touched: () => {},
     select: (i: number) => setSelected(i),
     trim: (i: number, t: Trim, commit: boolean) => {
       const cur = stRef.current;
@@ -77,6 +78,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
     const v = new StitchView(hostRef.current!, { items: st.items, settings: st.settings, selected }, {
       select: (i) => cbRef.current.select(i),
       trim: (i, t, c) => cbRef.current.trim(i, t, c),
+      touched: () => cbRef.current.touched(),
     });
     viewRef.current = v;
     return () => {
@@ -90,6 +92,8 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
   }, [st, selected]);
 
   const sel = selected >= 0 && selected < st.items.length ? selected : -1;
+  const hint = useHint(st.items.length > 0 && sel < 0 ? 'Tap a photo to trim it · hold a thumbnail to reorder' : null);
+  cbRef.current.touched = hint.dismiss;
   const setSettings = (p: Partial<StitchSettings>, commit = true) => change({ ...st, settings: { ...st.settings, ...p } }, commit);
 
   const addMore = usePicker(async (files) => {
@@ -104,6 +108,18 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
       setBusy(null);
     }
   }, true, 'pick-more');
+
+  /** Moves item `from` to position `to` (long-press drag in the strip). */
+  const reorder = (from: number, to: number) => {
+    const cur = stRef.current;
+    if (from === to || from < 0 || to < 0 || from >= cur.items.length || to >= cur.items.length) return;
+    const items = cur.items.slice();
+    const [x] = items.splice(from, 1);
+    items.splice(to, 0, x);
+    change({ ...cur, items }, true);
+    setSelected(to);
+  };
+  const drag = useStripDrag(reorder);
 
   const move = (dir: -1 | 1) => {
     const j = sel + dir;
@@ -210,7 +226,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
         </button>
         <div class="title">Stitch · {st.items.length}</div>
         <button class="tb-btn" aria-label="Edit result" onClick={toEditor} disabled={!st.items.length}>
-          <IcEdit />
+          <IcEdit /> Edit
         </button>
         <button class="tb-btn primary" onClick={() => setExporting(true)} disabled={!st.items.length}>
           <IcShare /> Save
@@ -219,7 +235,7 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
 
       <div class="topbar-space" />
       <div class="stage" ref={hostRef}>
-        {st.items.length > 0 && sel < 0 && <div class="hint">Tap a photo to trim or reorder it</div>}
+        {st.items.length > 0 && sel < 0 && <div class={'hint' + (hint.visible ? '' : ' gone')}>Tap a photo to trim it · hold a thumbnail to reorder</div>}
       </div>
       <div class="editbar">
         <button class="tb-btn" aria-label="Undo" disabled={!hist.canUndo} onClick={() => restore(hist.undo())}>
@@ -234,9 +250,19 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
         <div class="panel">
           {tab === 'photos' && (
             <div>
-              <div class="strip-list">
+              <div class="strip-list" ref={drag.listRef}>
                 {st.items.map((x, i) => (
-                  <button key={x.id} class={'strip-item' + (i === sel ? ' on' : '')} onClick={() => setSelected(i === sel ? -1 : i)}>
+                  <button
+                    key={x.id}
+                    data-strip-index={i}
+                    aria-label={`Photo ${i + 1}`}
+                    class={'strip-item' + (i === sel ? ' on' : '') + drag.classFor(i)}
+                    onPointerDown={(e) => drag.down(e, i)}
+                    onClick={() => {
+                      if (drag.consumeClick()) return;
+                      setSelected(i === sel ? -1 : i);
+                    }}
+                  >
                     <img src={x.src.thumbUrl} alt="" />
                     <span class="n">{i + 1}</span>
                   </button>
@@ -313,13 +339,13 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
               {S.layout === 'grid' && (
                 <>
                   <Slider name="Columns" min={1} max={6} neutral={2} value={S.columns} onInput={(v) => setSettings({ columns: v }, false)} onCommit={(v) => setSettings({ columns: v })} />
-                  <div class="row scroll">
+                  <Scroller>
                     {CELL_ASPECTS.map((a) => (
                       <button key={a.name} class={'chip' + (S.cellAspect === a.v ? ' on' : '')} onClick={() => setSettings({ cellAspect: a.v })}>
                         {a.name}
                       </button>
                     ))}
-                  </div>
+                  </Scroller>
                 </>
               )}
               {S.layout !== 'grid' && <p class="note muted">Photos are scaled to a common {S.layout === 'vertical' ? 'width' : 'height'}. Tap a photo, then drag its orange handles to trim.</p>}
@@ -330,12 +356,12 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
               <Slider name="Spacing" min={0} max={120} value={S.gap} onInput={(v) => setSettings({ gap: v }, false)} onCommit={(v) => setSettings({ gap: v })} />
               <Slider name="Border" min={0} max={160} value={S.padding} onInput={(v) => setSettings({ padding: v }, false)} onCommit={(v) => setSettings({ padding: v })} />
               <Slider name="Corners" min={0} max={160} value={S.radius} onInput={(v) => setSettings({ radius: v }, false)} onCommit={(v) => setSettings({ radius: v })} />
-              <div class="row scroll">
+              <Scroller>
                 {BG.map((c) => (
                   <button key={c} aria-label={`Background ${c}`} class={'icon-btn' + (S.background === c ? ' on' : '')} style={{ background: c }} onClick={() => setSettings({ background: c })} />
                 ))}
                 <input type="color" value={S.background} aria-label="Custom background" onInput={(e) => setSettings({ background: (e.target as HTMLInputElement).value }, false)} onChange={() => setSettings({})} />
-              </div>
+              </Scroller>
             </div>
           )}
         </div>
@@ -372,6 +398,111 @@ export function Stitch(props: { initial: StitchItem[]; onClose: () => void; onEd
       <Busy text={busy} />
     </>
   );
+}
+
+/**
+ * Long-press a thumbnail, then drag it sideways to reorder. A quick swipe still scrolls the strip: dragging only
+ * starts once the finger has rested on a thumbnail, and from then on the strip's scrolling is blocked.
+ */
+function useStripDrag(reorder: (from: number, to: number) => void) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<{ from: number; to: number } | null>(null);
+  const st = useRef<{ from: number; to: number; x: number; y: number; timer: number; active: boolean; id: number } | null>(null);
+  const suppressClick = useRef(false);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    // iOS: once a drag is active, cancel the touch's scrolling (needs a non-passive listener)
+    const tm = (e: TouchEvent) => {
+      if (st.current?.active) e.preventDefault();
+    };
+    el.addEventListener('touchmove', tm, { passive: false });
+    return () => el.removeEventListener('touchmove', tm);
+  }, []);
+
+  const target = (clientX: number): number => {
+    const el = listRef.current!;
+    const items = Array.from(el.querySelectorAll<HTMLElement>('[data-strip-index]'));
+    let best = st.current!.from;
+    let bestD = Infinity;
+    for (const it of items) {
+      const r = it.getBoundingClientRect();
+      const d = Math.abs(clientX - (r.left + r.width / 2));
+      if (d < bestD) (bestD = d), (best = Number(it.dataset.stripIndex));
+    }
+    return best;
+  };
+
+  const down = (e: PointerEvent, i: number) => {
+    if (st.current) return;
+    const btn = e.currentTarget as HTMLElement;
+    const s = {
+      from: i,
+      to: i,
+      x: e.clientX,
+      y: e.clientY,
+      id: e.pointerId,
+      active: false,
+      timer: window.setTimeout(() => {
+        s.active = true;
+        try {
+          btn.setPointerCapture(s.id);
+        } catch {
+          /* pointer already gone */
+        }
+        setState({ from: i, to: i });
+      }, 380),
+    };
+    st.current = s;
+    const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== s.id) return;
+      if (!s.active) {
+        if (Math.hypot(ev.clientX - s.x, ev.clientY - s.y) > 8) end(ev, false);
+        return;
+      }
+      const el = listRef.current!;
+      const r = el.getBoundingClientRect();
+      if (ev.clientX < r.left + 40) el.scrollLeft -= 10;
+      else if (ev.clientX > r.right - 40) el.scrollLeft += 10;
+      s.to = target(ev.clientX);
+      setState({ from: s.from, to: s.to });
+    };
+    const end = (ev: PointerEvent, commit: boolean) => {
+      if (ev.pointerId !== s.id) return;
+      clearTimeout(s.timer);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel);
+      st.current = null;
+      if (s.active) {
+        suppressClick.current = true;
+        setState(null);
+        if (commit) reorder(s.from, s.to);
+      }
+    };
+    const up = (ev: PointerEvent) => end(ev, true);
+    const cancel = (ev: PointerEvent) => end(ev, false);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel);
+  };
+
+  return {
+    listRef,
+    down,
+    consumeClick: () => {
+      const v = suppressClick.current;
+      suppressClick.current = false;
+      return v;
+    },
+    classFor: (i: number) => {
+      if (!state) return '';
+      if (i === state.from) return ' dragging';
+      if (i === state.to) return state.to < state.from ? ' drop-before' : ' drop-after';
+      return '';
+    },
+  };
 }
 
 function clampTrimFor(it: StitchItem, t: Trim): Trim {

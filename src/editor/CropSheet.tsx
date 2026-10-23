@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { checkerPattern, createCanvas, ctx2d, releaseCanvas } from '../core/canvas';
 import { aspectRect, dragRect, type Edges } from '../core/croprect';
 import type { ImageLayer, Rect } from '../core/doc';
-import { Sheet } from '../ui/common';
+import { Scroller, Sheet } from '../ui/common';
 
 const ASPECTS: { name: string; v: number | null | 'orig' }[] = [
   { name: 'Free', v: null },
@@ -156,11 +156,11 @@ export function CropSheet(props: { layer: ImageLayer; onDone: (r: Rect | null) =
   };
 
   return (
-    <Sheet title="Crop overlay" onClose={props.onClose}>
+    <Sheet title="Crop overlay" onClose={props.onClose} keep>
       <div class="crop-stage" ref={hostRef}>
         <canvas ref={canvasRef} data-testid="layer-crop-canvas" />
       </div>
-      <div class="row scroll">
+      <Scroller>
         {ASPECTS.map((a) => {
           const v = a.v === 'orig' ? W / H : a.v;
           const on = v === null ? aspect === null : aspect !== null && Math.abs(aspect - v) < 1e-6;
@@ -170,7 +170,7 @@ export function CropSheet(props: { layer: ImageLayer; onDone: (r: Rect | null) =
             </button>
           );
         })}
-      </div>
+      </Scroller>
       <p class="note" data-testid="layer-crop-size">
         {Math.round(rect.w)} × {Math.round(rect.h)} px
       </p>
