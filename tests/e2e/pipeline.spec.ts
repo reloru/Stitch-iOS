@@ -1,15 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { gradient } from './fixtures';
-import { settle } from './util';
+import { setRange, settle } from './util';
 
-async function setRange(page: Page, label: string, value: number) {
-  await page.getByRole('slider', { name: label, exact: true }).evaluate((el, v) => {
-    const i = el as HTMLInputElement;
-    i.value = String(v);
-    i.dispatchEvent(new Event('input', { bubbles: true }));
-    i.dispatchEvent(new Event('change', { bubbles: true }));
-  }, value);
-}
 
 
 const POINTS = [

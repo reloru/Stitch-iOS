@@ -29,6 +29,8 @@ export class History<D, M extends MaskLike> {
   private undoStack: Entry<D, M>[] = [];
   private redoStack: Entry<D, M>[] = [];
   private committed: Entry<D, M>;
+  /** entries dropped from the bottom of the undo stack (keeps `position` stable across trims) */
+  private dropped = 0;
 
   constructor(
     doc: D,
@@ -58,13 +60,17 @@ export class History<D, M extends MaskLike> {
   }
 
   private trim() {
-    while (this.undoStack.length > this.limit) this.undoStack.shift();
+    while (this.undoStack.length > this.limit) {
+      this.undoStack.shift();
+      this.dropped++;
+    }
     const all = [...this.undoStack, this.committed, ...this.redoStack];
     const seen = new Set<Uint8Array>();
     let bytes = 0;
     for (const e of all) for (const s of e.masks) if (!seen.has(s.alpha)) (seen.add(s.alpha), (bytes += s.alpha.byteLength));
     while (bytes > this.byteBudget && this.undoStack.length > 0) {
       const dropped = this.undoStack.shift()!;
+      this.dropped++;
       const stillUsed = new Set<Uint8Array>();
       for (const e of [...this.undoStack, this.committed, ...this.redoStack]) for (const s of e.masks) stillUsed.add(s.alpha);
       for (const s of dropped.masks) if (!stillUsed.has(s.alpha) && seen.has(s.alpha)) (seen.delete(s.alpha), (bytes -= s.alpha.byteLength));
@@ -90,6 +96,19 @@ export class History<D, M extends MaskLike> {
   revert(): D {
     this.restore(this.committed);
     return this.committed.doc;
+  }
+
+  /**
+   * How many commits deep the current state is. Monotonic for a given history line (trimming old entries does not
+   * change it), so a tool session can remember where it started and undo back to exactly there.
+   */
+  get position(): number {
+    return this.dropped + this.undoStack.length;
+  }
+
+  /** Every document still reachable through undo/redo, plus the current one. */
+  docs(): D[] {
+    return [...this.undoStack.map((e) => e.doc), this.committed.doc, ...this.redoStack.map((e) => e.doc)];
   }
 
   get canUndo() {

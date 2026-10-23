@@ -73,4 +73,19 @@ describe('history', () => {
     expect(undos).toBeLessThan(4);
     expect(undos).toBeGreaterThan(0);
   });
+
+  it('position is stable when old entries are trimmed, and docs() lists every reachable document', () => {
+    const h = new History<D, FakeMask>({ n: 0, masks: [] }, (d) => d.masks, io, 3);
+    for (let i = 1; i <= 5; i++) h.commit({ n: i, masks: [] });
+    // only 3 undo steps are kept, but the position still counts all 5 commits
+    expect(h.position).toBe(5);
+    expect(h.docs().map((d) => d.n)).toEqual([2, 3, 4, 5]);
+    h.undo();
+    expect(h.position).toBe(4);
+    expect(h.docs().map((d) => d.n)).toEqual([2, 3, 4, 5]);
+    h.commit({ n: 9, masks: [] });
+    // the redo branch is gone
+    expect(h.docs().map((d) => d.n)).toEqual([2, 3, 4, 9]);
+    expect(h.position).toBe(5);
+  });
 });

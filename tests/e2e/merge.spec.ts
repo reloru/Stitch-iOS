@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { overlay, photo } from './fixtures';
-import { settle } from './util';
+import { editLayer, setRange, settle } from './util';
 
 async function centre(page: Page): Promise<number[]> {
   return page.evaluate(() => {
@@ -9,14 +9,6 @@ async function centre(page: Page): Promise<number[]> {
   });
 }
 
-async function setRange(page: Page, label: string, value: number) {
-  await page.getByRole('slider', { name: label, exact: true }).evaluate((el, v) => {
-    const i = el as HTMLInputElement;
-    i.value = String(v);
-    i.dispatchEvent(new Event('input', { bubbles: true }));
-    i.dispatchEvent(new Event('change', { bubbles: true }));
-  }, value);
-}
 
 const isYellow = (p: number[]) => p[0] > 200 && p[1] > 180 && p[2] < 90;
 const isGrey = (p: number[]) => Math.abs(p[0] - p[1]) < 8 && Math.abs(p[1] - p[2]) < 8;
@@ -33,21 +25,21 @@ test('merge layers into one photo, edit it as a whole, undo to get the layers ba
   await expect(page.locator('.layer-chip.on')).toContainText('disc');
   await expect.poll(async () => isYellow(await centre(page))).toBe(true);
 
-  // while layered, background adjustments leave the overlay alone
-  await page.locator('.layer-chip', { hasText: 'Background' }).click();
+  // while layered, Adjust edits the overlay first; switching it to the background leaves the overlay alone
   await page.getByRole('tab', { name: 'Adjust' }).click();
-  await expect(page.getByTestId('merge-hint')).toBeVisible();
+  await expect(page.getByTestId('target-chip')).toContainText('disc');
+  await editLayer(page, 'Background');
   await setRange(page, 'Saturation', -100);
   await settle(page);
   await expect.poll(async () => isYellow(await centre(page))).toBe(true);
   await page.getByRole('button', { name: 'Undo' }).click();
 
-  await page.getByRole('tab', { name: 'Overlay' }).click();
-  await page.getByTestId('merge-layers').click();
-  await expect(page.locator('.toast')).toContainText('Applied');
-  await expect(page.getByRole('tab', { name: 'Adjust' })).toHaveAttribute('aria-selected', 'true');
+  // merge from the layer picker under the picture
+  await page.getByTestId('target-chip').click();
+  await page.getByTestId('picker-merge').click();
+  await expect(page.locator('.toast')).toContainText('Merged');
   await expect(page.locator('.topbar .title')).toHaveText('1200 × 1200');
-  await expect(page.getByTestId('merge-hint')).toHaveCount(0);
+  await expect(page.getByTestId('target-chip')).toHaveCount(0);
   await expect.poll(async () => isYellow(await centre(page))).toBe(true);
 
   // now the same adjustment changes everything, including what used to be the overlay

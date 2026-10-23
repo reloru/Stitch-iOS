@@ -60,12 +60,12 @@ export async function loadSource(blob: Blob, name = 'Photo'): Promise<SourceImag
 }
 
 /**
- * Creates a source from a canvas we rendered ourselves (a stitch or an applied edit). Opaque results are stored
- * as JPEG 0.97, which keeps repeated applies small in memory with negligible generation loss; PNG otherwise.
+ * Creates a source from a canvas we rendered ourselves (a stitch or a merge). Always stored as PNG so merging and
+ * stitching never add a generation of lossy compression; `alpha` records whether the result can be transparent.
  */
 export async function sourceFromCanvas(c: HTMLCanvasElement, name: string, alpha = true): Promise<SourceImage> {
-  const blob = alpha ? await canvasToBlob(c, 'image/png') : await canvasToBlob(c, 'image/jpeg', 0.97);
-  return loadSource(blob, name);
+  const src = await loadSource(await canvasToBlob(c, 'image/png'), name);
+  return { ...src, alpha };
 }
 
 /** Decodes the full-resolution image (capped to the device limit). Caller must release the returned canvas. */

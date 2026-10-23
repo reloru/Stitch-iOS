@@ -12,6 +12,8 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+  /* tool panel: always three 44 pt rows, so the picture keeps one size across tools */
+  --panel-h: calc(3 * 44px + 2 * 8px + 16px);
   color-scheme: dark;
 }
 
@@ -266,10 +268,82 @@ textarea {
 }
 
 .panel {
-  padding: 10px calc(var(--safe-right) + 14px) 6px calc(var(--safe-left) + 14px);
-  max-height: 38vh;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
+  height: var(--panel-h);
+  padding: 8px calc(var(--safe-right) + 14px) 8px calc(var(--safe-left) + 14px);
+  overflow: hidden auto;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pane > .row,
+.pane > .note {
+  margin: 0;
+}
+
+.pane > .note {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.sep {
+  flex: none;
+  width: 1px;
+  height: 24px;
+  background: var(--line);
+}
+
+/* a setting that differs from its default */
+.chip.dot::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.chip.on.dot::after {
+  background: #1a1206;
+}
+
+.tb-btn.on {
+  color: var(--accent);
+}
+
+.target-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 160px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 4px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.target-chip .lt {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: #000 center / cover no-repeat;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  flex: none;
+}
+
+.target-chip .ln {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tabs {
@@ -313,7 +387,6 @@ textarea {
 .row.scroll {
   overflow-x: auto;
   flex-wrap: nowrap;
-  padding-bottom: 4px;
   scrollbar-width: none;
 }
 
@@ -428,6 +501,7 @@ input[type='range'] {
   appearance: none;
   width: 100%;
   height: 44px;
+  margin: 0;
   background: transparent;
   touch-action: pan-y;
 }
@@ -494,7 +568,8 @@ textarea {
   display: flex;
   gap: 10px;
   overflow-x: auto;
-  padding: 4px 0 8px;
+  height: 96px;
+  align-items: center;
   scrollbar-width: none;
 }
 
@@ -504,7 +579,7 @@ textarea {
 
 .thumb {
   flex: none;
-  width: 74px;
+  width: 66px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -515,8 +590,8 @@ textarea {
 
 .thumb canvas,
 .thumb img {
-  width: 74px;
-  height: 74px;
+  width: 66px;
+  height: 66px;
   border-radius: 10px;
   object-fit: cover;
   border: 2px solid transparent;
@@ -537,7 +612,8 @@ textarea {
   display: flex;
   gap: 8px;
   overflow-x: auto;
-  padding: 2px 0 6px;
+  flex: none;
+  align-items: center;
   scrollbar-width: none;
 }
 
@@ -580,11 +656,17 @@ textarea {
 }
 
 /* ---------- stitch list ---------- */
+.panel.stitch-panel {
+  /* a 64 pt photo strip and two 44 pt rows */
+  height: calc(64px + 2 * 44px + 2 * 8px + 16px);
+}
+
 .strip-list {
   display: flex;
+  flex: none;
   gap: 8px;
   overflow-x: auto;
-  padding: 2px 0 6px;
+  padding: 0;
   scrollbar-width: none;
 }
 

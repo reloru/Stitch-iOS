@@ -157,6 +157,8 @@ export class EditorView {
   private deferredDown = false;
   private downAt = { t: 0, x: 0, y: 0 };
   private cursor: Pt | null = null;
+  /** show the brush outline in the middle of the picture until this time (while its size is being changed) */
+  private brushPreviewUntil = 0;
   private raf = 0;
   private ro: ResizeObserver;
 
@@ -200,6 +202,13 @@ export class EditorView {
       if (state.tool === 'crop') this.resetView();
     }
     this.schedule();
+  }
+
+  /** Shows the brush outline at the centre of the picture for a moment (call while Size/Hardness change). */
+  previewBrush() {
+    this.brushPreviewUntil = performance.now() + 900;
+    this.schedule();
+    window.setTimeout(() => this.schedule(), 950);
   }
 
   resetView() {
@@ -308,7 +317,13 @@ export class EditorView {
     const sameDoc = f.doc === this.state.doc || (world && f.doc !== null && sameWorldRender(f.doc, this.state.doc));
     if (this.composite && sameDoc && f.world === world && f.compare === compare && f.ps === ps && f.tick === this.maskTick) return;
     let doc = this.state.doc;
-    if (compare) doc = { ...doc, base: { ...doc.base, adjust: ADJUST_DEFAULTS, look: LOOK_DEFAULT }, vignette: 0 };
+    if (compare)
+      doc = {
+        ...doc,
+        base: { ...doc.base, adjust: ADJUST_DEFAULTS, look: LOOK_DEFAULT },
+        layers: doc.layers.map((l) => (l.kind === 'image' ? { ...l, adjust: ADJUST_DEFAULTS, look: LOOK_DEFAULT } : l)),
+        vignette: 0,
+      };
     const opts = { scale: ps, mode: 'preview' as const, world, cache: this.cache };
     const size = renderSize(doc, opts);
     if (!this.composite) this.composite = createCanvas(size.w, size.h);
@@ -519,12 +534,32 @@ export class EditorView {
         ctx.setLineDash([]);
       }
     }
-    if (this.cursor && this.state.mask.tool === 'brush') {
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    const preview = performance.now() < this.brushPreviewUntil;
+    const at = preview ? { x: this.cw / 2, y: this.ch / 2 } : this.cursor;
+    if (at && this.state.mask.tool === 'brush') {
+      const r = this.state.mask.size * this.dpr;
       ctx.lineWidth = 1.5 * this.dpr;
+      if (preview) {
+        // dark halo so the outline reads on light and dark photos
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+        ctx.lineWidth = 3.5 * this.dpr;
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.lineWidth = 1.5 * this.dpr;
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
       ctx.beginPath();
-      ctx.arc(this.cursor.x, this.cursor.y, this.state.mask.size * this.dpr, 0, Math.PI * 2);
+      ctx.arc(at.x, at.y, r, 0, Math.PI * 2);
       ctx.stroke();
+      if (preview && this.state.mask.hardness < 0.98) {
+        // the fully opaque core; the soft edge fades out between the two circles
+        ctx.setLineDash([4 * this.dpr, 4 * this.dpr]);
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, Math.max(1, r * this.state.mask.hardness), 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
   }
 
