@@ -32,6 +32,7 @@ import { Busy, raiseKeyboard, Scroller, Sheet, Slider, toast, useHint, usePicker
 import { ExportSheet } from '../ui/ExportSheet';
 import { removeBackground } from '../core/removebg';
 import { flattenDoc } from '../core/export';
+import { autosaver, clearSession, saveEditor } from '../core/persist';
 import { CropSheet } from './CropSheet';
 import {
   IcAdjust,
@@ -132,12 +133,13 @@ function patchTarget(doc: Doc, id: string, patch: { adjust?: Adjust; look?: Look
   return updateLayer(doc, id, patch);
 }
 
-function sourcesOf(d: Doc, into: Set<SourceImage>) {
+function sourcesOf(d: Doc, into: Set<SourceImage>): Set<SourceImage> {
   into.add(d.base.src);
   for (const l of d.layers) if (l.kind === 'image') into.add(l.src);
+  return into;
 }
 
-export function Editor(props: { initial: Doc; onClose: () => void }) {
+export function Editor(props: { initial: Doc; onClose: () => void; restored?: boolean }) {
   const [doc, setDocState] = useState<Doc>(props.initial);
   const docRef = useRef(doc);
   const hist = useMemo(() => new History<Doc, Mask>(props.initial, docMasks, maskIO), []);
@@ -160,7 +162,17 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   const [brushSetting, setBrushSetting] = useState<BrushSetting>('size');
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const ownedSources = useRef(new Set<SourceImage>([props.initial.base.src]));
+  const ownedSources = useRef(sourcesOf(props.initial, new Set<SourceImage>()));
+  /** this screen's edit is the saved one (it was resumed, or has been autosaved): only then does leaving clear it */
+  const ownsSave = useRef(!!props.restored);
+  const saver = useMemo(
+    () =>
+      autosaver(async () => {
+        await saveEditor(docRef.current);
+        ownsSave.current = true;
+      }),
+    [],
+  );
   /** history position where the current tool session started: ✗ undoes back to it, ✓ moves it to now */
   const sessionPos = useRef(0);
 
@@ -212,10 +224,25 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
     const v = new EditorView(hostRef.current!, { doc, tool, selected: sel, mask, aspect, compare }, cb);
     viewRef.current = v;
     return () => {
+      void saver.stop();
       v.destroy();
       for (const s of ownedSources.current) disposeSource(s);
     };
   }, []);
+
+  // autosave every committed change (and a restored session as soon as it is open again)
+  const histPos = hist.position;
+  useEffect(() => {
+    if (hist.canUndo || props.restored) saver.request();
+  }, [histPos, hist.canRedo]);
+
+  /** Leaving on purpose (Back → Discard): stop autosaving and forget the saved session. */
+  const leave = async () => {
+    setConfirmLeave(false);
+    await saver.stop();
+    if (ownsSave.current) await clearSession();
+    props.onClose();
+  };
 
   useEffect(() => {
     viewRef.current?.update({ doc, tool, selected: sel, mask, aspect, compare });
@@ -365,7 +392,7 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
   return (
     <>
       <div class="topbar">
-        <button class="tb-btn" aria-label="Back" onClick={() => (changed ? setConfirmLeave(true) : props.onClose())}>
+        <button class="tb-btn" aria-label="Back" onClick={() => (changed || props.restored ? setConfirmLeave(true) : void leave())}>
           <IcBack />
         </button>
         <div class="title">
@@ -590,12 +617,12 @@ export function Editor(props: { initial: Doc; onClose: () => void }) {
       )}
       {confirmLeave && (
         <Sheet title="Leave the editor?" onClose={() => setConfirmLeave(false)}>
-          <p class="note">Your edits are not saved anywhere until you tap Save. Leaving discards them.</p>
+          <p class="note">Leaving discards this edit. To keep the picture, tap Save first.</p>
           <div class="actions">
             <button class="btn" onClick={() => setConfirmLeave(false)}>
               Keep editing
             </button>
-            <button class="btn danger" onClick={props.onClose}>
+            <button class="btn danger" onClick={() => void leave()} data-testid="leave-discard">
               Discard
             </button>
           </div>

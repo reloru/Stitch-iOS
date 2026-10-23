@@ -58,6 +58,10 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
 - Tool panel: fixed height (`--panel-h`, three 44 pt rows) so the picture never resizes between tools; panels show
   one slider at a time with chips choosing what it controls. An e2e test asserts the stage height is constant.
 - Adjust/Filters/Mask edit one layer, chosen with the layer chip under the picture (shown when there are photo layers).
+- Autosave (`src/core/persist.ts`): the open editor document or stitch is written to IndexedDB (debounced after each
+  commit, flushed when the page is hidden): photo bytes once per source, mask alpha, layers, settings; no undo history.
+  The home screen offers "Continue"; Back → Discard clears it. New document fields must survive structured clone
+  (plain data) or be converted in `saveEditor`/`restoreSession`.
 - Overlay photos: `ImageLayer.crop` is in source px; always map layer pixels with `imageLayerMat(l)` (crop-aware),
   and change crops via `setLayerCrop` so the visible pixels stay put. Masks stay in full source px.
 
