@@ -17,8 +17,29 @@
       "name": "REMOVE_BG_LIMIT",
       "namespace_id": "47213",
       "simple": { "limit": 20, "period": 60 }
+    },
+    {
+      "name": "INPAINT_LIMIT",
+      "namespace_id": "47214",
+      "simple": { "limit": 6, "period": 60 }
     }
   ],
+  // Object removal: LaMa on CPU in a container (container/), reached through the Inpainter Durable Object.
+  // The default scheduling policy cannot be changed after the container application is created.
+  "containers": [
+    {
+      "class_name": "Inpainter",
+      "image": "./container/Dockerfile",
+      "max_instances": 2,
+      "instance_type": { "vcpu": 4, "memory_mib": 12288, "disk_mb": 4000 }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "INPAINTER", "class_name": "Inpainter" }]
+  },
+  "exports": {
+    "Inpainter": { "type": "durable-object", "storage": "sqlite" }
+  },
   "observability": { "enabled": true },
   "workers_dev": true
 }

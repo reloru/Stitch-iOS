@@ -1,8 +1,10 @@
 # Stitch
 
 Mobile-first photo editor (edit, overlay, mask, stitch) built as an installable PWA for iPhone Safari.
-Image processing runs client-side in the browser. The only server code is `worker/` (`POST /api/remove-bg`,
-Cloudflare Images `segment: "foreground"` via the Images binding, rate-limited per IP). Static files are served by
+Image processing runs client-side in the browser. The server code is `worker/`: `POST /api/remove-bg` (Cloudflare
+Images `segment: "foreground"` via the Images binding) and `POST /api/inpaint` (object removal: the `Inpainter`
+Durable Object starts the `container/` image — LaMa on CPU via ONNX Runtime — and forwards to it), each rate-limited
+per IP. Static files are served by
 Workers static assets on the Worker named `stitch` (https://stitch.reloru.workers.dev); `run_worker_first` sends only
 `/api/*` to the Worker.
 
@@ -12,8 +14,11 @@ Workers static assets on the Worker named `stitch` (https://stitch.reloru.worker
 - `npm test` — Vitest unit tests (`tests/unit`, Node environment; pure logic only)
 - `npm run build` — Vite production build into `dist/` (also emits `sw.js` and `version.json`)
 - `npm run e2e` — Playwright against `vite preview`, Chromium with iPhone 14 Pro Max emulation (`tests/e2e`). Run after `build`.
-- `npm run deploy:dry` — `wrangler deploy --dry-run`
-- `npm run check` — typecheck + unit + build + e2e
+- `npm run deploy:dry` — `wrangler deploy --dry-run`. Builds the container image, so it needs a Docker daemon. In a
+  Claude Code cloud session start one with `dockerd &`; the build still fails there because pip inside the build
+  does not trust the session's TLS proxy — rely on CI for this check (CI also runs `container/selftest.py` in the image).
+- Container locally: `docker build -t stitch-inpaint container && docker run --rm stitch-inpaint python /app/selftest.py`
+- `npm run check` — typecheck + unit + build + e2e + deploy:dry
 
 Playwright is pinned to 1.56.1 to match the Chromium build preinstalled in Claude Code cloud containers
 (`/opt/pw-browsers`); do not run `playwright install` there.
@@ -49,8 +54,14 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
   (screenshot overlap), `png` (streaming encoder), `export`, `source` (decode + proxies), `canvas` (limits, helpers).
 - `src/editor/` — `view.ts` is the imperative canvas/gesture engine; `Editor.tsx` is the Preact UI around it.
 - `src/stitch/` — same split for the stitcher.
-- `worker/` — `handler.ts` is pure (bindings injected, unit-tested in Node); `index.ts` wires `env.IMAGES` and
-  `env.REMOVE_BG_LIMIT`. E2E tests never call the real API: they intercept `/api/remove-bg` with `page.route`.
+- `worker/` — `handler.ts` is pure (bindings injected, unit-tested in Node); `index.ts` wires `env.IMAGES`, the rate
+  limits and the `Inpainter` Durable Object. E2E tests never call the real APIs: they intercept `/api/*` with
+  `page.route`.
+- `container/` — `server.py` (HTTP on :8080: `/health`, `POST /inpaint` = image bytes + mask bytes, header
+  `x-image-length`; returns RGBA PNG whose alpha is the grown, feathered mask), `selftest.py`, `Dockerfile` (pinned
+  model revision + sha256, converted to ORT format at build time). Model input is fixed at 512×512.
+  Container app: `default` scheduling policy (cannot change after creation), custom 4 vCPU / 12 GiB, stops 2 min after
+  the last request.
 - ✓/✗ under the picture are per tool session: the session starts at `History.position` when a tool is opened (or at
   the last ✓/✗); ✗ undoes back to it, ✓ moves it to now. Nothing is baked in. Merge / Flatten = `flattenDoc`
   (full-res render → new single-photo doc), stored as PNG so it adds no lossy generation. Photos no longer reachable
