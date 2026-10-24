@@ -46,11 +46,14 @@ async function canvasCentre(page: Page) {
   return { x: b.x + b.width / 2, y: b.y + b.height / 2, b };
 }
 
-for (const tool of ['Brush', 'Color'] as const) {
-  test(`double-tap in Mask (${tool}) zooms and leaves the photo alone`, async ({ page }) => {
+for (const tool of ['Brush', 'Color', 'Erase'] as const) {
+  test(`double-tap in ${tool === 'Erase' ? 'Erase' : `Mask (${tool})`} zooms and leaves the photo alone`, async ({ page }) => {
     await openPhoto(page);
-    await page.getByRole('tab', { name: 'Mask' }).click();
-    await page.getByRole('button', { name: tool }).click();
+    if (tool === 'Erase') await page.getByRole('tab', { name: 'Erase' }).click();
+    else {
+      await page.getByRole('tab', { name: 'Mask' }).click();
+      await page.getByRole('button', { name: tool }).click();
+    }
     await settle(page);
     const { x, y } = await canvasCentre(page);
     // 0.4 across is red before zooming; at 2.5× about the centre the green square reaches it
@@ -60,6 +63,7 @@ for (const tool of ['Brush', 'Color'] as const) {
     await settle(page);
     await expect(page.locator('.busy')).toHaveCount(0);
     expect(await undoDepth(page)).toBe(0);
+    if (tool === 'Erase') await expect(page.getByTestId('erase-remove')).toBeDisabled();
     await expect.poll(async () => isGreen(await pixel(page, 0.4, 0.5))).toBe(true);
   });
 }
@@ -149,7 +153,7 @@ test('controls are at least 44 pt tall', async ({ page }) => {
         .map((e) => ({ t: (e.textContent || e.getAttribute('aria-label') || e.className).trim(), h: e.getBoundingClientRect().height }))
         .filter((x) => x.h > 0 && x.h < 43.5),
     );
-  for (const tab of ['Adjust', 'Filters', 'Crop', 'Overlay', 'Mask']) {
+  for (const tab of ['Adjust', 'Filters', 'Crop', 'Overlay', 'Mask', 'Erase']) {
     await page.getByRole('tab', { name: tab }).click();
     expect(await small(), tab).toEqual([]);
   }
@@ -238,11 +242,15 @@ test('the picture keeps one size across every tool and panel state (430 and 375 
     }
     await page.getByTestId('mask-actions').click();
     await record('Mask actions');
+    await page.getByRole('tab', { name: 'Erase' }).click();
+    await record('Erase');
     const values = [...heights.values()];
     expect(new Set(values).size, JSON.stringify(Object.fromEntries(heights))).toBe(1);
     // and it is the larger part of the screen
     expect(values[0]).toBeGreaterThan((width === 430 ? 932 : 667) * (width === 430 ? 0.5 : 0.4));
-    // the layer chip under the picture fits beside the bar buttons
+    // the layer chip under the picture fits beside the bar buttons (Erase always edits the background: no chip)
+    await expect(page.getByTestId('target-chip')).toHaveCount(0);
+    await page.getByRole('tab', { name: 'Mask' }).click();
     const bar = (await page.locator('.editbar').boundingBox())!;
     const chip = (await page.getByTestId('target-chip').boundingBox())!;
     expect(chip.x + chip.width).toBeLessThanOrEqual(bar.x + bar.width);

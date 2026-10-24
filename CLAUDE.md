@@ -73,6 +73,11 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
   commit, flushed when the page is hidden): photo bytes once per source, mask alpha, layers, settings; no undo history.
   The home screen offers "Continue"; Back → Discard clears it. New document fields must survive structured clone
   (plain data) or be converted in `saveEditor`/`restoreSession`.
+- Erase tool: the selection is a `Mask` in the background photo's source px (mapped with `geo.orient`), owned by the
+  Editor (not the document) with its own undo stack, which Undo/Redo/✗ use first while in Erase; it resets when the
+  background source changes. `core/inpaint.ts` plans the crop (`planCrop`: native 512 px square if the object fits,
+  else scaled down), posts it, and composites the returned RGBA patch at full resolution; the result replaces
+  `doc.base.src` (PNG) as one undoable commit. E2E tests mock `/api/inpaint` with a half-transparent patch.
 - Overlay photos: `ImageLayer.crop` is in source px; always map layer pixels with `imageLayerMat(l)` (crop-aware),
   and change crops via `setLayerCrop` so the visible pixels stay put. Masks stay in full source px.
 

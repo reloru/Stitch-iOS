@@ -62,16 +62,19 @@ export class Inpainter extends DurableObject<Env> {
     return res.arrayBuffer();
   }
 
+  /**
+   * Starts the container if needed and waits until /health answers. A start can fail for a while (e.g. just after a
+   * deploy, while new instances roll out), so it is retried within the same deadline instead of failing the request.
+   */
   private async startAndWait(): Promise<void> {
     const container = this.ctx.container!;
-    if (!container.running) container.start({ enableInternet: false });
-    await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
-    const port = container.getTcpPort(8080);
     const deadline = Date.now() + READY_TIMEOUT_MS;
     let lastError: unknown;
     while (Date.now() < deadline) {
       try {
-        const r = await port.fetch('http://container/health', { signal: AbortSignal.timeout(2000) });
+        if (!container.running) container.start({ enableInternet: false });
+        await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
+        const r = await container.getTcpPort(8080).fetch('http://container/health', { signal: AbortSignal.timeout(2000) });
         await r.body?.cancel();
         if (r.ok) return;
         lastError = new Error(`health ${r.status}`);
@@ -80,6 +83,7 @@ export class Inpainter extends DurableObject<Env> {
       }
       await scheduler.wait(500);
     }
+    console.error('inpaint container not ready', lastError);
     throw new Error('container did not become ready', { cause: lastError });
   }
 }

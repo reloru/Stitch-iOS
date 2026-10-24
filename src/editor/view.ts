@@ -35,7 +35,7 @@ import {
 import { imageRaster, RasterCache, renderDoc, renderSize } from '../core/render';
 import { measureText } from '../core/text';
 
-export type Tool = 'adjust' | 'filters' | 'crop' | 'layers' | 'mask';
+export type Tool = 'adjust' | 'filters' | 'crop' | 'layers' | 'mask' | 'erase';
 export type MaskTool = 'brush' | 'linear' | 'radial' | 'wand';
 
 export interface MaskSettings {
@@ -63,8 +63,17 @@ export const MASK_DEFAULTS: MaskSettings = {
   show: true,
 };
 
+/** Erase tool: the painted selection of what to remove, in the background photo's source px (like its mask). */
+export interface EraseState {
+  sel: Mask | null;
+  /** brush radius in CSS px on screen */
+  size: number;
+  mode: 'paint' | 'unpaint';
+}
+
 export interface ViewState {
   doc: Doc;
+  erase: EraseState;
   tool: Tool;
   /** 'base' or a layer id */
   selected: string;
@@ -85,6 +94,8 @@ export interface ViewCallbacks {
   busy(text: string | null): void;
   /** the user touched the picture (used to dismiss hints) */
   touched(): void;
+  /** an Erase selection stroke finished; `before` is the selection's alpha before it (for undo) */
+  eraseStroke(before: Uint8Array): void;
 }
 
 type Gesture =
@@ -97,10 +108,13 @@ type Gesture =
   | { kind: 'crop-edge'; start: Pt; crop: Crop; anchor: Pt; f: number; l: boolean; r: boolean; t: boolean; b: boolean }
   | { kind: 'pinch-crop'; d0: number; crop: Crop }
   | { kind: 'mask-brush'; last: Pt; carry: number; startedAt: number }
+  | { kind: 'erase-brush'; last: Pt; carry: number; before: Uint8Array }
   | { kind: 'mask-line'; p0: Pt; p1: Pt }
   | { kind: 'none' };
 
 const CSS_MARGIN = 16;
+/** the Erase brush is fairly hard: the server grows and feathers the mask itself */
+const ERASE_HARDNESS = 0.7;
 const CROP_MARGIN = 34;
 /** a second tap within this time (ms) and distance (CSS px) of the first is a double-tap */
 const DOUBLE_TAP_MS = 350;
@@ -140,6 +154,7 @@ export class EditorView {
   };
   private maskTick = 0;
   private tint: { key: string; canvas: HTMLCanvasElement } | null = null;
+  private eraseTint: { key: string; canvas: HTMLCanvasElement } | null = null;
   private checker: CanvasPattern | string | null = null;
 
   private zoom = 1;
@@ -152,7 +167,7 @@ export class EditorView {
   private gesture: Gesture = { kind: 'none' };
   private lastTap = { t: 0, x: 0, y: 0 };
   /** a single brush dab or colour pick waiting to see whether a second tap makes it a double-tap */
-  private pendingTap: { kind: 'dab' | 'wand'; p: Pt; timer: number } | null = null;
+  private pendingTap: { kind: 'dab' | 'wand' | 'erase'; p: Pt; timer: number; before?: Uint8Array } | null = null;
   /** the current finger went down as a possible second tap: its gesture starts only once it moves */
   private deferredDown = false;
   private downAt = { t: 0, x: 0, y: 0 };
@@ -189,6 +204,7 @@ export class EditorView {
     this.cache.clear();
     releaseCanvas(this.composite);
     if (this.tint) releaseCanvas(this.tint.canvas);
+    if (this.eraseTint) releaseCanvas(this.eraseTint.canvas);
     this.canvas.remove();
   }
 
@@ -379,6 +395,7 @@ export class EditorView {
 
     if (this.state.tool === 'layers') this.drawLayerOverlay();
     if (this.state.tool === 'mask') this.drawMaskOverlay();
+    if (this.state.tool === 'erase') this.drawEraseOverlay();
   }
 
   private cropScreenRect(): { x: number; y: number; w: number; h: number } {
@@ -534,10 +551,46 @@ export class EditorView {
         ctx.setLineDash([]);
       }
     }
+    if (this.state.mask.tool === 'brush') this.drawBrushOutline(this.state.mask.size, this.state.mask.hardness);
+  }
+
+  /** Red over what is selected for removal, plus the brush outline. */
+  private drawEraseOverlay() {
+    const ctx = this.ctx;
+    const m = this.state.erase.sel;
+    if (m) {
+      const key = `${m.id}:${m.version}`;
+      if (!this.eraseTint || this.eraseTint.key !== key) {
+        let c = this.eraseTint?.canvas ?? null;
+        if (!c || c.width !== m.canvas.width || c.height !== m.canvas.height) {
+          releaseCanvas(c);
+          c = createCanvas(m.canvas.width, m.canvas.height);
+        }
+        const x = ctx2d(c);
+        x.save();
+        x.globalCompositeOperation = 'copy';
+        x.fillStyle = 'rgb(255,40,90)';
+        x.fillRect(0, 0, c.width, c.height);
+        x.globalCompositeOperation = 'destination-in';
+        x.drawImage(m.canvas, 0, 0);
+        x.restore();
+        this.eraseTint = { key, canvas: c };
+      }
+      this.setT(chain(this.screenFromWorld(), this.state.doc.geo.orient, scale(1 / m.scale)));
+      ctx.globalAlpha = 0.55;
+      ctx.drawImage(this.eraseTint.canvas, 0, 0);
+      ctx.globalAlpha = 1;
+    }
+    this.drawBrushOutline(this.state.erase.size, ERASE_HARDNESS);
+  }
+
+  private drawBrushOutline(size: number, hardness: number) {
+    const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     const preview = performance.now() < this.brushPreviewUntil;
     const at = preview ? { x: this.cw / 2, y: this.ch / 2 } : this.cursor;
-    if (at && this.state.mask.tool === 'brush') {
-      const r = this.state.mask.size * this.dpr;
+    if (at) {
+      const r = size * this.dpr;
       ctx.lineWidth = 1.5 * this.dpr;
       if (preview) {
         // dark halo so the outline reads on light and dark photos
@@ -552,11 +605,11 @@ export class EditorView {
       ctx.beginPath();
       ctx.arc(at.x, at.y, r, 0, Math.PI * 2);
       ctx.stroke();
-      if (preview && this.state.mask.hardness < 0.98) {
+      if (preview && hardness < 0.98) {
         // the fully opaque core; the soft edge fades out between the two circles
         ctx.setLineDash([4 * this.dpr, 4 * this.dpr]);
         ctx.beginPath();
-        ctx.arc(at.x, at.y, Math.max(1, r * this.state.mask.hardness), 0, Math.PI * 2);
+        ctx.arc(at.x, at.y, Math.max(1, r * hardness), 0, Math.PI * 2);
         ctx.stroke();
         ctx.setLineDash([]);
       }
@@ -634,6 +687,7 @@ export class EditorView {
     clearTimeout(t.timer);
     this.pendingTap = null;
     if (t.kind === 'dab') this.cb.change(this.state.doc, true);
+    else if (t.kind === 'erase') this.cb.eraseStroke(t.before!);
     else void this.wandAt(t.p);
   }
 
@@ -642,7 +696,7 @@ export class EditorView {
    * colour pick is dropped (it has not happened yet and its target may be about to change).
    */
   settle() {
-    if (this.pendingTap?.kind === 'dab') this.flush();
+    if (this.pendingTap?.kind === 'dab' || this.pendingTap?.kind === 'erase') this.flush();
     else if (this.pendingTap) this.cancelTap();
   }
 
@@ -656,16 +710,25 @@ export class EditorView {
       this.cb.revert();
       this.maskChanged();
     }
+    if (t.kind === 'erase') this.restoreSelection(t.before!);
   }
 
-  private holdTap(kind: 'dab' | 'wand', p: Pt) {
+  private holdTap(kind: 'dab' | 'wand' | 'erase', p: Pt, before?: Uint8Array) {
     const timer = window.setTimeout(() => this.flush(), DOUBLE_TAP_MS);
-    this.pendingTap = { kind, p, timer };
+    this.pendingTap = { kind, p, timer, before };
+  }
+
+  private restoreSelection(before: Uint8Array) {
+    const sel = this.state.erase.sel;
+    if (!sel) return;
+    writeAlpha(sel, before);
+    touch(sel);
+    this.schedule();
   }
 
   private onMove = (e: PointerEvent) => {
     if (!this.pointers.has(e.pointerId)) {
-      if (this.state.tool === 'mask' && e.pointerType === 'mouse') {
+      if ((this.state.tool === 'mask' || this.state.tool === 'erase') && e.pointerType === 'mouse') {
         this.cursor = this.pt(e);
         this.schedule();
       }
@@ -703,10 +766,11 @@ export class EditorView {
         this.lastTap.t = 0;
       } else {
         const g = this.gesture;
-        if (isTap && g.kind === 'mask-brush') {
+        if (isTap && (g.kind === 'mask-brush' || g.kind === 'erase-brush')) {
           // a single dab: shown now, committed once the double-tap window has passed
           this.gesture = { kind: 'none' };
-          this.holdTap('dab', p);
+          if (g.kind === 'erase-brush') this.holdTap('erase', p, g.before);
+          else this.holdTap('dab', p);
         } else {
           this.flush();
           this.endOne(p);
@@ -812,6 +876,10 @@ export class EditorView {
       this.startMask(p);
       return;
     }
+    if (s.tool === 'erase') {
+      this.startErase(p);
+      return;
+    }
     this.gesture = { kind: 'view-pan', start: p, panX: this.panX, panY: this.panY };
   }
 
@@ -865,6 +933,9 @@ export class EditorView {
         break;
       case 'mask-brush':
         this.moveBrush(g, p);
+        break;
+      case 'erase-brush':
+        this.moveErase(g, p);
         break;
       case 'mask-line':
         g.p1 = p;
@@ -937,6 +1008,9 @@ export class EditorView {
       case 'mask-brush':
         this.cb.change(this.state.doc, true);
         break;
+      case 'erase-brush':
+        this.cb.eraseStroke(g.before);
+        break;
       case 'mask-line':
         g.p1 = p;
         this.applyMaskLine(g);
@@ -953,6 +1027,7 @@ export class EditorView {
       this.maskChanged();
     }
     if (g.kind === 'crop-pan') this.cb.change(this.state.doc, true);
+    if (g.kind === 'erase-brush') this.restoreSelection(g.before);
     this.cropFrozen = null;
     this.gesture = { kind: 'none' };
   }
@@ -1102,6 +1177,35 @@ export class EditorView {
     touch(t.mask);
     this.cursor = p;
     this.maskChanged();
+  }
+
+  private eraseBrush(sel: Mask): Brush {
+    const { pxPerMask } = this.maskMapping(sel, this.state.doc.geo.orient);
+    const e = this.state.erase;
+    return { radius: (e.size * this.dpr) / pxPerMask, hardness: ERASE_HARDNESS, flow: 1, mode: e.mode === 'paint' ? 'reveal' : 'hide' };
+  }
+
+  private startErase(p: Pt) {
+    const sel = this.state.erase.sel;
+    if (!sel) return;
+    const before = readAlpha(sel);
+    const { inv } = this.maskMapping(sel, this.state.doc.geo.orient);
+    const q = apply(inv, p);
+    dab(sel, q.x, q.y, this.eraseBrush(sel));
+    touch(sel);
+    this.cursor = p;
+    this.gesture = { kind: 'erase-brush', last: q, carry: 0, before };
+  }
+
+  private moveErase(g: Extract<Gesture, { kind: 'erase-brush' }>, p: Pt) {
+    const sel = this.state.erase.sel;
+    if (!sel) return;
+    const { inv } = this.maskMapping(sel, this.state.doc.geo.orient);
+    const q = apply(inv, p);
+    g.carry = strokeSegment(sel, g.last.x, g.last.y, q.x, q.y, this.eraseBrush(sel), g.carry);
+    g.last = q;
+    touch(sel);
+    this.cursor = p;
   }
 
   private applyMaskLine(g: Extract<Gesture, { kind: 'mask-line' }>) {
