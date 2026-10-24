@@ -32,8 +32,19 @@ export class Inpainter extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const container = ctx.container!;
-    // the timeout does not survive a Durable Object restart
-    if (container.running) void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS));
+    // The timeout does not survive a Durable Object restart, so set it again — but never inside
+    // blockConcurrencyWhile: right after a deploy this call can stall while the container is replaced, and a
+    // blockConcurrencyWhile callback that runs past 30 s resets the object and fails the request in flight.
+    if (container.running) void this.keepAliveFor(INACTIVITY_TIMEOUT_MS);
+  }
+
+  /** Sets the inactivity timeout, giving up after a few seconds (it is retried on the next start-up check). */
+  private async keepAliveFor(ms: number): Promise<void> {
+    try {
+      await Promise.race([this.ctx.container!.setInactivityTimeout(ms), scheduler.wait(5000).then(() => Promise.reject(new Error('setInactivityTimeout timed out')))]);
+    } catch (e) {
+      console.error('could not set the container inactivity timeout', e);
+    }
   }
 
   async inpaint(image: ArrayBuffer, mask: ArrayBuffer): Promise<ArrayBuffer> {
@@ -89,7 +100,7 @@ export class Inpainter extends DurableObject<Env> {
     while (Date.now() < deadline) {
       try {
         if (!container.running) container.start({ enableInternet: false });
-        await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
+        await this.keepAliveFor(INACTIVITY_TIMEOUT_MS);
         const r = await container.getTcpPort(8080).fetch('http://container/health', { signal: AbortSignal.timeout(2000) });
         await r.body?.cancel();
         if (r.ok) return;
