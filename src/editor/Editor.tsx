@@ -27,7 +27,8 @@ import {
 import { renderAdjusted } from '../core/gl';
 import { History } from '../core/history';
 import { cloneMask, createMask, fillMask, invertMask, readAlpha, touch, writeAlpha, type Mask } from '../core/mask';
-import { disposeSource, loadSource, uid, type SourceImage } from '../core/source';
+import { disposeSource, loadSource, sourceFromCanvas, uid, type SourceImage } from '../core/source';
+import { alphaBounds, removeObject } from '../core/inpaint';
 import { Busy, raiseKeyboard, Scroller, Sheet, Slider, toast, useHint, usePicker } from '../ui/common';
 import { ExportSheet } from '../ui/ExportSheet';
 import { removeBackground } from '../core/removebg';
@@ -41,6 +42,7 @@ import {
   IcCopy,
   IcCrop,
   IcDown,
+  IcEraser,
   IcEye,
   IcFilter,
   IcFlipH,
@@ -63,10 +65,13 @@ import {
   IcUp,
   IcWand,
 } from '../ui/icons';
-import { EditorView, MASK_DEFAULTS, type MaskSettings, type Tool } from './view';
+import { EditorView, MASK_DEFAULTS, type EraseState, type MaskSettings, type Tool } from './view';
 
 const maskIO = { read: readAlpha, write: writeAlpha };
 const BG_NOTICE_KEY = 'stitch.removebg.notice';
+const ERASE_NOTICE_KEY = 'stitch.inpaint.notice';
+/** selection strokes kept for Undo in the Erase tool (each is one alpha snapshot, ≤ 4 MB) */
+const SEL_UNDO_MAX = 20;
 
 const ASPECTS: { name: string; v: number | null | 'orig' }[] = [
   { name: 'Free', v: null },
@@ -86,6 +91,7 @@ const TOOLS: { id: Tool; name: string; Icon: typeof IcAdjust }[] = [
   { id: 'crop', name: 'Crop', Icon: IcCrop },
   { id: 'layers', name: 'Overlay', Icon: IcLayers },
   { id: 'mask', name: 'Mask', Icon: IcMask },
+  { id: 'erase', name: 'Erase', Icon: IcEraser },
 ];
 
 type AdjustParam = AdjustKey | 'vignette';
@@ -160,6 +166,14 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
   const [overlaySub, setOverlaySub] = useState<OverlaySub>('cutout');
   const [maskActions, setMaskActions] = useState(false);
   const [brushSetting, setBrushSetting] = useState<BrushSetting>('size');
+  const [eraseSize, setEraseSize] = useState(24);
+  const [eraseMode, setEraseMode] = useState<EraseState['mode']>('paint');
+  const [eraseConfirm, setEraseConfirm] = useState(false);
+  const [selHas, setSelHas] = useState(false);
+  /** what is painted for removal, for the current background photo; its strokes have their own undo */
+  const selRef = useRef<{ src: SourceImage; mask: Mask } | null>(null);
+  const selUndo = useRef<Uint8Array[]>([]);
+  const selRedo = useRef<Uint8Array[]>([]);
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const ownedSources = useRef(sourcesOf(props.initial, new Set<SourceImage>()));
@@ -196,6 +210,42 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
     setTick((t) => t + 1);
   };
 
+  /** The Erase selection for `src`; a new background photo (after a removal, undo, merge…) starts a fresh one. */
+  const selectionFor = (src: SourceImage): Mask => {
+    const cur = selRef.current;
+    if (cur && cur.src === src) return cur.mask;
+    if (cur) releaseCanvas(cur.mask.canvas);
+    const m = createMask(src.width, src.height);
+    fillMask(m, false);
+    touch(m);
+    selRef.current = { src, mask: m };
+    selUndo.current = [];
+    selRedo.current = [];
+    return m;
+  };
+  const refreshSelHas = () => {
+    const m = selRef.current?.mask;
+    setSelHas(!!m && alphaBounds(readAlpha(m), m.canvas.width, m.canvas.height) !== null);
+  };
+  const setSelection = (alpha: Uint8Array) => {
+    const m = selRef.current!.mask;
+    writeAlpha(m, alpha);
+    touch(m);
+    refreshSelHas();
+    setTick((t) => t + 1);
+  };
+  const clearSelection = () => {
+    const m = selRef.current?.mask;
+    if (!m) return;
+    selUndo.current.push(readAlpha(m));
+    if (selUndo.current.length > SEL_UNDO_MAX) selUndo.current.shift();
+    selRedo.current = [];
+    setSelection(new Uint8Array(m.canvas.width * m.canvas.height));
+  };
+
+  const eraseSel = tool === 'erase' ? selectionFor(doc.base.src) : selRef.current?.src === doc.base.src ? selRef.current.mask : null;
+  const erase = useMemo<EraseState>(() => ({ sel: eraseSel, size: eraseSize, mode: eraseMode }), [eraseSel, eraseSize, eraseMode]);
+
   const openText = (id: string) => {
     raiseKeyboard();
     setEditingText(id);
@@ -208,6 +258,13 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
     notify: (m: string) => toast(m),
     busy: (t: string | null) => setBusy(t),
     touched: () => {},
+    eraseStroke: (before: Uint8Array) => {
+      selUndo.current.push(before);
+      if (selUndo.current.length > SEL_UNDO_MAX) selUndo.current.shift();
+      selRedo.current = [];
+      refreshSelHas();
+      setTick((t) => t + 1);
+    },
   });
   cbRef.current.change = change;
 
@@ -220,13 +277,15 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
       notify: (m: string) => cbRef.current.notify(m),
       busy: (t: string | null) => cbRef.current.busy(t),
       touched: () => cbRef.current.touched(),
+      eraseStroke: (b: Uint8Array) => cbRef.current.eraseStroke(b),
     };
-    const v = new EditorView(hostRef.current!, { doc, tool, selected: sel, mask, aspect, compare }, cb);
+    const v = new EditorView(hostRef.current!, { doc, tool, selected: sel, mask, aspect, compare, erase }, cb);
     viewRef.current = v;
     return () => {
       void saver.stop();
       v.destroy();
       for (const s of ownedSources.current) disposeSource(s);
+      if (selRef.current) releaseCanvas(selRef.current.mask.canvas);
     };
   }, []);
 
@@ -245,8 +304,8 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
   };
 
   useEffect(() => {
-    viewRef.current?.update({ doc, tool, selected: sel, mask, aspect, compare });
-  }, [doc, tool, sel, mask, aspect, compare]);
+    viewRef.current?.update({ doc, tool, selected: sel, mask, aspect, compare, erase });
+  }, [doc, tool, sel, mask, aspect, compare, erase]);
 
   // Free photos (decoded proxies, thumbnails) that nothing can reach any more: not the current document and not any
   // document in undo/redo. Skipped while something asynchronous may still hold one.
@@ -287,6 +346,7 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
   const hint = (() => {
     if (tool === 'crop') return 'Drag edges to crop · drag inside to move · pinch to zoom';
     if (tool === 'layers') return doc.layers.length ? 'Drag to move · pinch or use the handle to resize and rotate' : 'Add a photo or text overlay below';
+    if (tool === 'erase') return 'Paint over what to remove · two fingers to zoom';
     if (tool === 'mask' && !maskActions) {
       if (mask.tool === 'brush') return `Paint to ${mask.mode === 'hide' ? 'hide' : 'reveal'} · two fingers to zoom`;
       if (mask.tool === 'linear') return 'Drag: kept at the start, faded out at the end';
@@ -359,8 +419,71 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
     sessionPos.current = hist.position;
     setTick((t) => t + 1);
   };
+  const selUndoable = tool === 'erase' && selUndo.current.length > 0;
+  const selRedoable = tool === 'erase' && selRedo.current.length > 0;
+  const undo = () => {
+    flush();
+    if (selUndoable) {
+      const m = selRef.current!.mask;
+      selRedo.current.push(readAlpha(m));
+      setSelection(selUndo.current.pop()!);
+      return;
+    }
+    restore(hist.undo());
+  };
+  const redo = () => {
+    flush();
+    if (selRedoable) {
+      const m = selRef.current!.mask;
+      selUndo.current.push(readAlpha(m));
+      setSelection(selRedo.current.pop()!);
+      return;
+    }
+    restore(hist.redo());
+  };
+
+  /**
+   * Erase: sends the painted area to the object-removal model and replaces the background photo with the result
+   * (a new, losslessly stored photo; Undo brings the old one back).
+   */
+  const doErase = async () => {
+    flush();
+    const s0 = selRef.current;
+    if (!s0 || s0.src !== docRef.current.base.src) return;
+    setBusy('Removing… the first removal after a break takes about half a minute');
+    try {
+      const full = await removeObject(s0.src, s0.mask);
+      let src: SourceImage;
+      try {
+        src = await sourceFromCanvas(full, s0.src.name, s0.src.alpha);
+      } finally {
+        releaseCanvas(full);
+      }
+      ownedSources.current.add(src);
+      const cur = docRef.current;
+      change({ ...cur, base: { ...cur.base, src } }, true);
+      setSelHas(false);
+      toast('Removed. Undo brings it back.');
+    } catch (e) {
+      toast((e as Error).message, 4000);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const requestErase = () => {
+    let ok = false;
+    try {
+      ok = localStorage.getItem(ERASE_NOTICE_KEY) === '1';
+    } catch {
+      /* storage unavailable: ask every time */
+    }
+    if (ok) void doErase();
+    else setEraseConfirm(true);
+  };
+
   const cancel = () => {
     flush();
+    if (tool === 'erase' && selRef.current) clearSelection();
     let d: Doc | null = null;
     while (hist.position > sessionPos.current && hist.canUndo) d = hist.undo();
     sessionPos.current = hist.position;
@@ -414,22 +537,16 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
         <button
           class="tb-btn"
           aria-label="Undo"
-          disabled={!hist.canUndo}
-          onClick={() => {
-            flush();
-            restore(hist.undo());
-          }}
+          disabled={!hist.canUndo && !selUndoable}
+          onClick={undo}
         >
           <IcUndo />
         </button>
         <button
           class="tb-btn"
           aria-label="Redo"
-          disabled={!hist.canRedo}
-          onClick={() => {
-            flush();
-            restore(hist.redo());
-          }}
+          disabled={!hist.canRedo && !selRedoable}
+          onClick={redo}
         >
           <IcRedo />
         </button>
@@ -462,7 +579,7 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
             <IcMask />
           </button>
         )}
-        <button class="tb-btn" aria-label="Cancel changes" disabled={!dirty} onClick={cancel} data-testid="tool-cancel">
+        <button class="tb-btn" aria-label="Cancel changes" disabled={!dirty && !(tool === 'erase' && selHas)} onClick={cancel} data-testid="tool-cancel">
           <IcClose />
         </button>
         <button class="tb-btn apply" aria-label="Keep changes" disabled={!dirty} onClick={keep} data-testid="tool-keep">
@@ -500,6 +617,21 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
               removeBg={requestRemoveBg}
               crop={setCropping}
               merge={merge}
+            />
+          )}
+          {tool === 'erase' && (
+            <ErasePanel
+              size={eraseSize}
+              setSize={(v) => {
+                setEraseSize(v);
+                viewRef.current?.previewBrush();
+              }}
+              mode={eraseMode}
+              setMode={setEraseMode}
+              hasSelection={selHas}
+              clear={clearSelection}
+              remove={requestErase}
+              layered={doc.layers.length > 0}
             />
           )}
           {tool === 'mask' && (
@@ -598,6 +730,34 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
                 const id = bgConfirm;
                 setBgConfirm(null);
                 void doRemoveBg(id);
+              }}
+            >
+              Continue
+            </button>
+          </div>
+        </Sheet>
+      )}
+      {eraseConfirm && (
+        <Sheet title="Remove objects" onClose={() => setEraseConfirm(false)}>
+          <p class="note">
+            This sends the area around what you painted to Cloudflare, where an AI model fills it in. Stitch doesn’t store
+            it. Everything else in Stitch stays on your phone. Needs an internet connection.
+          </p>
+          <div class="actions">
+            <button class="btn" onClick={() => setEraseConfirm(false)}>
+              Cancel
+            </button>
+            <button
+              class="btn primary"
+              data-testid="erase-confirm"
+              onClick={() => {
+                try {
+                  localStorage.setItem(ERASE_NOTICE_KEY, '1');
+                } catch {
+                  /* ignore */
+                }
+                setEraseConfirm(false);
+                void doErase();
               }}
             >
               Continue
@@ -1049,6 +1209,41 @@ function TextSheet(props: { layer: TextLayer | undefined; onChange: (p: Partial<
         </button>
       </div>
     </Sheet>
+  );
+}
+
+function ErasePanel(props: {
+  size: number;
+  setSize: (v: number) => void;
+  mode: EraseState['mode'];
+  setMode: (m: EraseState['mode']) => void;
+  hasSelection: boolean;
+  clear: () => void;
+  remove: () => void;
+  layered: boolean;
+}) {
+  return (
+    <div class="pane">
+      <Scroller>
+        <button class={'chip' + (props.mode === 'paint' ? ' on' : '')} onClick={() => props.setMode('paint')}>
+          <IcBrush style={{ width: 16, height: 16 }} /> Paint
+        </button>
+        <button class={'chip' + (props.mode === 'unpaint' ? ' on' : '')} onClick={() => props.setMode('unpaint')}>
+          <IcEraser style={{ width: 16, height: 16 }} /> Unpaint
+        </button>
+        <span class="sep" />
+        <button class="btn" disabled={!props.hasSelection} onClick={props.clear}>
+          Clear
+        </button>
+      </Scroller>
+      <Slider name="Size" min={6} max={120} neutral={24} value={props.size} onInput={props.setSize} onCommit={props.setSize} />
+      <div class="row">
+        <button class="btn primary" disabled={!props.hasSelection} onClick={props.remove} data-testid="erase-remove">
+          <IcWand /> Remove
+        </button>
+        <span class="label">{props.layered ? 'Changes the background photo; overlays stay on top.' : 'Fills the painted area to match its surroundings.'}</span>
+      </div>
+    </div>
   );
 }
 

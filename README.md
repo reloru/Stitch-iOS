@@ -30,6 +30,11 @@ after the first visit.
 - Merge / Flatten bakes everything so far — adjustments, filters, crop, overlays, text, masks — into one photo
   (lossless), so the next edit stacks on top or applies to the whole picture. Undo steps back across it.
 - When there are photo layers, the chip under the picture picks which layer Adjust, Filters and Mask change.
+- Erase (remove objects): paint over a person, bin, wire… and tap Remove; an AI model (LaMa) fills the area to match
+  its surroundings. Only the area around what you painted is sent (to a Cloudflare Container); the rest of the photo
+  is untouched pixel for pixel. Small objects are processed at full resolution; large ones (bigger than about
+  360 px across) are processed scaled down, so their fill is softer. Needs a connection; the first removal after a few idle
+  minutes takes about half a minute while the model starts.
 - Undo/redo for everything, including mask strokes.
 - Autosave: the open edit or stitch is kept on the phone (IndexedDB) and offered as "Continue" on the home screen, so
   it survives iOS closing the app in the background.
