@@ -21,6 +21,11 @@ interface Env {
 const INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
 /** Cold starts pull the image and load the model; give up after about this long. */
 const READY_TIMEOUT_MS = 150 * 1000;
+/**
+ * A request waits at most this long for start-up; then it answers "starting" (503) and the app retries, while the
+ * start continues here. Long-held requests are fragile on phones and proxies; short ones also let the app show progress.
+ */
+const REQUEST_WAIT_MS = 20 * 1000;
 
 /**
  * Owns the object-removal container (LaMa on CPU, see container/). One named instance serves every request; the
@@ -57,7 +62,7 @@ export class Inpainter extends DurableObject<Env> {
         headers: { 'content-type': 'application/octet-stream', 'x-image-length': String(image.byteLength) },
         body,
       });
-    await this.ready();
+    await this.ready(REQUEST_WAIT_MS);
     let res: Response;
     try {
       res = await send();
@@ -65,7 +70,7 @@ export class Inpainter extends DurableObject<Env> {
       // no HTTP answer at all: the container went away mid-request (e.g. replaced during a rollout) — start it
       // again and retry once; a model error is an HTTP status and is not retried
       console.error('inpaint request to the container failed, retrying', e);
-      await this.ready();
+      await this.ready(REQUEST_WAIT_MS);
       res = await send();
     }
     if (!res.ok) {
@@ -76,16 +81,24 @@ export class Inpainter extends DurableObject<Env> {
     return res.arrayBuffer();
   }
 
-  /** Concurrent requests share one start-up. */
-  private async ready(): Promise<void> {
-    this.starting ??= this.startAndWait().finally(() => {
+  /**
+   * Concurrent requests share one start-up. Waits at most `waitMs`; the start-up itself keeps going (the pending
+   * work keeps the Durable Object alive), so the app's next attempt picks up where this one left off.
+   */
+  private async ready(waitMs: number): Promise<void> {
+    const starting = (this.starting ??= this.startAndWait().finally(() => {
       this.starting = undefined;
-    });
+    }));
+    let timer = 0;
+    const timeout = new Promise<'timeout'>((resolve) => (timer = setTimeout(() => resolve('timeout'), waitMs) as unknown as number));
     try {
-      await this.starting;
+      if ((await Promise.race([starting, timeout])) === 'timeout') throw new Error(`${FAIL.start}: still starting`);
     } catch (e) {
-      console.error('inpaint container did not start', e);
-      throw new Error(`${FAIL.start}: container did not start`);
+      if (!String((e as Error)?.message).includes(FAIL.start)) console.error('inpaint container did not start', e);
+      starting.catch(() => {});
+      throw new Error(`${FAIL.start}: ${String((e as Error)?.message ?? e)}`);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

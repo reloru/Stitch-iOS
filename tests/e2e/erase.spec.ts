@@ -161,15 +161,37 @@ test('works on a rotated photo: the patch lands where it was painted', async ({ 
 
 test('a failed removal leaves the photo unchanged and says why', async ({ page }) => {
   await page.route('**/api/inpaint', (route) =>
-    route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'starting', message: 'The eraser is still starting up — try again in a moment' }) }),
+    route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ error: 'upstream', message: 'Removing the object failed — try again' }) }),
   );
   await open(page);
   await paintCentre(page);
   await page.getByTestId('erase-remove').click();
   await page.getByTestId('erase-confirm').click();
-  await expect(page.locator('.toast')).toContainText('starting up');
+  await expect(page.locator('.toast')).toContainText('failed');
   await settle(page);
   expect(isRed(await worldPixel(page, 650, 600))).toBe(true);
   // the selection is kept for another try
   await expect(page.getByTestId('erase-remove')).toBeEnabled();
+});
+
+test('while the eraser starts up, the app shows progress and retries until it is ready', async ({ page }) => {
+  let calls = 0;
+  await page.route('**/api/inpaint', async (route) => {
+    calls++;
+    if (calls <= 2) {
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'starting', message: 'The eraser is still starting up — try again in a moment' }) });
+      return;
+    }
+    const sizes = pngSizes(route.request().postDataBuffer()!);
+    await route.fulfill({ status: 200, contentType: 'image/png', body: await halfPatch(sizes[0].w, sizes[0].h) });
+  });
+  await open(page);
+  await paintCentre(page);
+  await page.getByTestId('erase-remove').click();
+  await page.getByTestId('erase-confirm').click();
+  await expect(page.locator('.busy')).toContainText('Starting the eraser');
+  await expect(page.locator('.toast')).toContainText('Removed', { timeout: 20_000 });
+  expect(calls).toBe(3);
+  await settle(page);
+  await expect.poll(async () => isMagenta(await worldPixel(page, 650, 600))).toBe(true);
 });

@@ -61,7 +61,8 @@ matches the one just built. Manual fallback: `npm run build && npx wrangler depl
   `x-image-length`; returns RGBA PNG whose alpha is the grown, feathered mask), `selftest.py`, `Dockerfile` (pinned
   model revision + sha256, converted to ORT format at build time). Model input is fixed at 512×512.
   Container app: `default` scheduling policy (cannot change after creation), custom 4 vCPU / 12 GiB, stops 2 min after
-  the last request.
+  the last request. A request waits at most 20 s for start-up, then gets 503 `starting` while start-up continues; the
+  app retries every 3 s for up to 150 s and shows progress (cold starts take ~25–45 s). Do not hold requests longer.
 - ✓/✗ under the picture are per tool session: the session starts at `History.position` when a tool is opened (or at
   the last ✓/✗); ✗ undoes back to it, ✓ moves it to now. Nothing is baked in. Merge / Flatten = `flattenDoc`
   (full-res render → new single-photo doc), stored as PNG so it adds no lossy generation. Photos no longer reachable

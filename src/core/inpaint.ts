@@ -69,27 +69,36 @@ export function planCrop(box: Box, imageW: number, imageH: number): InpaintCrop 
 
 export class InpaintError extends Error {}
 
-async function post(image: Blob, mask: Blob): Promise<Blob> {
-  const form = new FormData();
-  form.set('image', image, 'image.png');
-  form.set('mask', mask, 'mask.png');
-  let res: Response;
-  try {
-    res = await fetch('/api/inpaint', { method: 'POST', body: form });
-  } catch {
-    throw new InpaintError('Removing objects needs an internet connection');
-  }
-  if (!res.ok) {
-    let msg = 'Removing the object failed — try again';
+/** How long the app keeps retrying while the server-side model starts (it answers "starting" meanwhile). */
+export const START_WAIT_MS = 150_000;
+const RETRY_MS = 3000;
+
+async function post(image: Blob, mask: Blob, onStatus?: (s: string) => void): Promise<Blob> {
+  const started = Date.now();
+  for (;;) {
+    const form = new FormData();
+    form.set('image', image, 'image.png');
+    form.set('mask', mask, 'mask.png');
+    let res: Response;
     try {
-      const j = (await res.json()) as { message?: string };
-      if (j.message) msg = j.message;
+      res = await fetch('/api/inpaint', { method: 'POST', body: form });
+    } catch {
+      throw new InpaintError('Removing objects needs an internet connection');
+    }
+    if (res.ok) return res.blob();
+    let j: { error?: string; message?: string } = {};
+    try {
+      j = (await res.json()) as typeof j;
     } catch {
       /* not JSON */
     }
-    throw new InpaintError(msg);
+    if (res.status === 503 && j.error === 'starting' && Date.now() - started < START_WAIT_MS) {
+      onStatus?.(`Starting the eraser… ${Math.round((Date.now() - started) / 1000)} s (this happens after a few idle minutes)`);
+      await new Promise((r) => setTimeout(r, RETRY_MS));
+      continue;
+    }
+    throw new InpaintError(j.message ?? 'Removing the object failed — try again');
   }
-  return res.blob();
 }
 
 /**
@@ -97,7 +106,7 @@ async function post(image: Blob, mask: Blob): Promise<Blob> {
  * through its alpha at full resolution, so pixels away from the selection stay exactly as they were.
  * Returns a new full-resolution canvas (caller releases it).
  */
-export async function removeObject(src: SourceImage, selection: Mask): Promise<HTMLCanvasElement> {
+export async function removeObject(src: SourceImage, selection: Mask, onStatus?: (s: string) => void): Promise<HTMLCanvasElement> {
   const sel = selection.canvas;
   const b = alphaBounds(readAlpha(selection), sel.width, sel.height);
   if (!b) throw new InpaintError('Paint over what you want to remove first');
@@ -119,7 +128,7 @@ export async function removeObject(src: SourceImage, selection: Mask): Promise<H
     mx.fillStyle = '#000';
     mx.fillRect(0, 0, c.sendW, c.sendH);
     mx.drawImage(sel, c.x * k, c.y * k, c.w * k, c.h * k, 0, 0, c.sendW, c.sendH);
-    const out = await post(await canvasToBlob(input, 'image/png'), await canvasToBlob(mask, 'image/png'));
+    const out = await post(await canvasToBlob(input, 'image/png'), await canvasToBlob(mask, 'image/png'), onStatus);
 
     patch = await decodeImage(out);
     const ctx = ctx2d(full);
