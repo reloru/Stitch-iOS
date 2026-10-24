@@ -450,9 +450,9 @@ export function Editor(props: { initial: Doc; onClose: () => void; restored?: bo
     flush();
     const s0 = selRef.current;
     if (!s0 || s0.src !== docRef.current.base.src) return;
-    setBusy('Removing… the first removal after a break takes about half a minute');
+    setBusy('Removing…');
     try {
-      const full = await removeObject(s0.src, s0.mask);
+      const full = await removeObject(s0.src, s0.mask, (s) => setBusy(s));
       let src: SourceImage;
       try {
         src = await sourceFromCanvas(full, s0.src.name, s0.src.alpha);
