@@ -37,6 +37,36 @@ export class Inpainter extends DurableObject<Env> {
   }
 
   async inpaint(image: ArrayBuffer, mask: ArrayBuffer): Promise<ArrayBuffer> {
+    const body = new Uint8Array(image.byteLength + mask.byteLength);
+    body.set(new Uint8Array(image), 0);
+    body.set(new Uint8Array(mask), image.byteLength);
+    const send = () =>
+      this.ctx.container!.getTcpPort(8080).fetch('http://container/inpaint', {
+        method: 'POST',
+        headers: { 'content-type': 'application/octet-stream', 'x-image-length': String(image.byteLength) },
+        body,
+      });
+    await this.ready();
+    let res: Response;
+    try {
+      res = await send();
+    } catch (e) {
+      // no HTTP answer at all: the container went away mid-request (e.g. replaced during a rollout) — start it
+      // again and retry once; a model error is an HTTP status and is not retried
+      console.error('inpaint request to the container failed, retrying', e);
+      await this.ready();
+      res = await send();
+    }
+    if (!res.ok) {
+      const detail = await res.text();
+      console.error('inpaint failed', res.status, detail);
+      throw new Error(`${res.status === 400 ? FAIL.input : FAIL.model}: ${detail}`);
+    }
+    return res.arrayBuffer();
+  }
+
+  /** Concurrent requests share one start-up. */
+  private async ready(): Promise<void> {
     this.starting ??= this.startAndWait().finally(() => {
       this.starting = undefined;
     });
@@ -46,20 +76,6 @@ export class Inpainter extends DurableObject<Env> {
       console.error('inpaint container did not start', e);
       throw new Error(`${FAIL.start}: container did not start`);
     }
-    const body = new Uint8Array(image.byteLength + mask.byteLength);
-    body.set(new Uint8Array(image), 0);
-    body.set(new Uint8Array(mask), image.byteLength);
-    const res = await this.ctx.container!.getTcpPort(8080).fetch('http://container/inpaint', {
-      method: 'POST',
-      headers: { 'content-type': 'application/octet-stream', 'x-image-length': String(image.byteLength) },
-      body,
-    });
-    if (!res.ok) {
-      const detail = await res.text();
-      console.error('inpaint failed', res.status, detail);
-      throw new Error(`${res.status === 400 ? FAIL.input : FAIL.model}: ${detail}`);
-    }
-    return res.arrayBuffer();
   }
 
   /**
