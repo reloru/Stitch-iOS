@@ -28,6 +28,8 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e
+      - name: Object-removal container self-test (real model, real HTTP server)
+        run: docker build -t stitch-inpaint container && docker run --rm stitch-inpaint python /app/selftest.py
       - name: Wrangler dry run
         run: npx wrangler deploy --dry-run
       - uses: actions/upload-artifact@v7
